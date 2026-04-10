@@ -25,6 +25,7 @@ climate::ClimateTraits ActronB812Climate::traits() {
 
 void ActronB812Climate::setup() {
   active_cmd_ = CMD_OFF;
+  publish_sensors_();
 }
 
 void ActronB812Climate::control(const climate::ClimateCall &call) {
@@ -57,90 +58,70 @@ void ActronB812Climate::update() {
     }
   }
 
-  if (!pending_change_) {
-    send_frame_(active_cmd_);
-    return;
-  }
+  if (pending_change_) {
+    uint8_t desired = build_cmd_(pending_mode_, pending_fan_);
+    bool comp_desired = (desired & BIT_COMP) != 0;
+    bool heat_direction_change = comp_desired && ((desired & BIT_HEAT) != (active_cmd_ & BIT_HEAT));
 
-  uint8_t desired = build_cmd_(pending_mode_, pending_fan_);
-  bool comp_desired = (desired & BIT_COMP) != 0;
-  bool heat_direction_change = comp_desired && ((desired & BIT_HEAT) != (active_cmd_ & BIT_HEAT));
+    // Branch A: compressor not needed (OFF or FAN_ONLY).
+    if (!comp_desired) {
+      if (comp_running_) {
+        comp_off_time_ = millis();
+        comp_timer_armed_ = true;
+        comp_running_ = false;
+        ESP_LOGD(TAG, "Compressor stopped, cooldown armed");
+      }
 
-  // Branch A: compressor not needed (OFF or FAN_ONLY).
-  if (!comp_desired) {
-    if (comp_running_) {
+      // If HEAT is still set, keep it until cooldown elapses so the reversing
+      // valve doesn't switch while there's residual refrigerant pressure.
+      if ((active_cmd_ & BIT_HEAT) && comp_timer_armed_ && !comp_cooldown_elapsed_()) {
+        active_cmd_ = desired | BIT_HEAT;
+        ESP_LOGD(TAG, "Keeping HEAT on until cooldown elapses (%.0fs remaining)",
+                 (comp_cooldown_ms_ - (millis() - comp_off_time_)) / 1000.0f);
+      } else {
+        active_cmd_ = desired;
+        pending_change_ = false;
+        ESP_LOGD(TAG, "Applying command 0x%02X", active_cmd_);
+      }
+
+    // Step 1: If the heat direction is changing and comp is still running, stop it first.
+    } else if (comp_running_ && heat_direction_change) {
+      active_cmd_ = (active_cmd_ & ~BIT_COMP) & ~BIT_CALL;
+      comp_running_ = false;
       comp_off_time_ = millis();
       comp_timer_armed_ = true;
-      comp_running_ = false;
-      ESP_LOGD(TAG, "Compressor stopped, cooldown armed");
-    }
+      ESP_LOGW(TAG, "Heat direction change — stopping compressor first");
 
-    // If HEAT is still set, keep it until cooldown elapses so the reversing
-    // valve doesn't switch while there's residual refrigerant pressure.
-    if ((active_cmd_ & BIT_HEAT) && comp_timer_armed_ && !comp_cooldown_elapsed_()) {
-      active_cmd_ = desired | BIT_HEAT;
-      ESP_LOGD(TAG, "Keeping HEAT on until cooldown elapses (%.0fs remaining)",
+    // Step 2: Wait for compressor cooldown before restarting.
+    } else if (comp_timer_armed_ && !comp_cooldown_elapsed_()) {
+      ESP_LOGD(TAG, "Waiting for compressor cooldown (%.0fs remaining)",
                (comp_cooldown_ms_ - (millis() - comp_off_time_)) / 1000.0f);
-      send_frame_(active_cmd_);
-      return;
+
+    // Step 3: HEAT going ON→OFF (Heat→Cool direction) — clear bit and arm valve timer.
+    } else if ((active_cmd_ & BIT_HEAT) && !(desired & BIT_HEAT) && !valve_timer_armed_) {
+      active_cmd_ &= ~BIT_HEAT;
+      valve_switch_time_ = millis();
+      valve_timer_armed_ = true;
+      ESP_LOGD(TAG, "Reversing valve switching to cool — waiting for valve to settle");
+
+    // Step 4: Wait for reversing valve to settle after going ON→OFF.
+    } else if (valve_timer_armed_ && !valve_settled_()) {
+      ESP_LOGD(TAG, "Waiting for valve settle (%.0fs remaining)",
+               (valve_settle_ms_ - (millis() - valve_switch_time_)) / 1000.0f);
+
+    // Step 5: All clear — apply the full desired command.
+    } else {
+      active_cmd_ = desired;
+      comp_running_ = true;
+      comp_timer_armed_ = false;
+      valve_timer_armed_ = false;
+      pending_change_ = false;
+      ESP_LOGD(TAG, "Applying command 0x%02X", active_cmd_);
     }
-
-    active_cmd_ = desired;
-    pending_change_ = false;
-    ESP_LOGD(TAG, "Applying command 0x%02X", active_cmd_);
-    send_frame_(active_cmd_);
-    return;
   }
 
-  // From here: compressor is desired (COOL or HEAT).
-
-  // Step 1: If the heat direction is changing and comp is still running, stop it first.
-  if (comp_running_ && heat_direction_change) {
-    active_cmd_ = (active_cmd_ & ~BIT_COMP) & ~BIT_CALL;
-    comp_running_ = false;
-    comp_off_time_ = millis();
-    comp_timer_armed_ = true;
-    ESP_LOGW(TAG, "Heat direction change — stopping compressor first");
-    send_frame_(active_cmd_);
-    return;
-  }
-
-  // Step 2: Wait for compressor cooldown before restarting.
-  if (comp_timer_armed_ && !comp_cooldown_elapsed_()) {
-    ESP_LOGD(TAG, "Waiting for compressor cooldown (%.0fs remaining)",
-             (comp_cooldown_ms_ - (millis() - comp_off_time_)) / 1000.0f);
-    send_frame_(active_cmd_);
-    return;
-  }
-
-  // Step 3: HEAT going ON→OFF (Heat→Cool direction).
-  // Clear the HEAT bit now and arm the valve settle timer.
-  bool heat_going_off = (active_cmd_ & BIT_HEAT) && !(desired & BIT_HEAT);
-  if (heat_going_off && !valve_timer_armed_) {
-    active_cmd_ &= ~BIT_HEAT;
-    valve_switch_time_ = millis();
-    valve_timer_armed_ = true;
-    ESP_LOGD(TAG, "Reversing valve switching to cool — waiting for valve to settle");
-    send_frame_(active_cmd_);
-    return;
-  }
-
-  // Step 4: Wait for reversing valve to settle after going ON→OFF.
-  if (valve_timer_armed_ && !valve_settled_()) {
-    ESP_LOGD(TAG, "Waiting for valve settle (%.0fs remaining)",
-             (valve_settle_ms_ - (millis() - valve_switch_time_)) / 1000.0f);
-    send_frame_(active_cmd_);
-    return;
-  }
-
-  // Step 5: All clear — apply the full desired command.
-  active_cmd_ = desired;
-  comp_running_ = true;
-  comp_timer_armed_ = false;
-  valve_timer_armed_ = false;
-  pending_change_ = false;
-  ESP_LOGD(TAG, "Applying command 0x%02X", active_cmd_);
   send_frame_(active_cmd_);
+  publish_sensors_();
 }
 
 bool ActronB812Climate::comp_cooldown_elapsed_() {
@@ -149,6 +130,45 @@ bool ActronB812Climate::comp_cooldown_elapsed_() {
 
 bool ActronB812Climate::valve_settled_() {
   return (millis() - valve_switch_time_) >= valve_settle_ms_;
+}
+
+std::string ActronB812Climate::compute_state_() {
+  // Timers take priority — describe what we're waiting for.
+  if (comp_timer_armed_ && !comp_cooldown_elapsed_()) {
+    // If HEAT bit is still held (Branch A waiting to clear valve), label differently.
+    return (active_cmd_ & BIT_HEAT) ? "heat_valve_hold" : "comp_cooldown";
+  }
+  if (valve_timer_armed_ && !valve_settled_())
+    return "valve_settling";
+  if (active_cmd_ & BIT_COMP)
+    return (active_cmd_ & BIT_HEAT) ? "heating" : "cooling";
+  if (active_cmd_ & (BIT_FS1 | BIT_FS2 | BIT_FS3))
+    return "fan_only";
+  return "off";
+}
+
+float ActronB812Climate::timer_remaining_s_() {
+  if (comp_timer_armed_ && !comp_cooldown_elapsed_())
+    return (comp_cooldown_ms_ - (millis() - comp_off_time_)) / 1000.0f;
+  if (valve_timer_armed_ && !valve_settled_())
+    return (valve_settle_ms_ - (millis() - valve_switch_time_)) / 1000.0f;
+  return 0.0f;
+}
+
+void ActronB812Climate::publish_sensors_() {
+  if (compressor_running_sensor_)
+    compressor_running_sensor_->publish_state(comp_running_);
+
+  if (state_sensor_)
+    state_sensor_->publish_state(compute_state_());
+
+  if (timer_remaining_sensor_) {
+    int remaining_s = static_cast<int>(timer_remaining_s_());
+    if (remaining_s != timer_remaining_last_s_) {
+      timer_remaining_last_s_ = remaining_s;
+      timer_remaining_sensor_->publish_state(static_cast<float>(remaining_s));
+    }
+  }
 }
 
 uint8_t ActronB812Climate::build_cmd_(climate::ClimateMode mode,

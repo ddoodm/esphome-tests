@@ -1,7 +1,11 @@
 #pragma once
 
+#include <string>
+#include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/climate/climate.h"
 #include "esphome/components/remote_transmitter/remote_transmitter.h"
+#include "esphome/components/sensor/sensor.h"
+#include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/core/component.h"
 
 namespace esphome {
@@ -28,6 +32,10 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   }
   void set_compressor_cooldown(uint32_t ms) { comp_cooldown_ms_ = ms; }
   void set_valve_settle_time(uint32_t ms) { valve_settle_ms_ = ms; }
+
+  void set_compressor_running_sensor(binary_sensor::BinarySensor *s) { compressor_running_sensor_ = s; }
+  void set_state_sensor(text_sensor::TextSensor *s) { state_sensor_ = s; }
+  void set_timer_remaining_sensor(sensor::Sensor *s) { timer_remaining_sensor_ = s; }
 
   void setup() override;
   void update() override;  // Called every 222ms — sends current frame
@@ -56,8 +64,17 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   uint32_t valve_switch_time_{0};
   bool valve_timer_armed_{false};
 
+  // Optional diagnostic sensors (all nullptr if not configured in YAML)
+  binary_sensor::BinarySensor *compressor_running_sensor_{nullptr};
+  text_sensor::TextSensor *state_sensor_{nullptr};
+  sensor::Sensor *timer_remaining_sensor_{nullptr};
+  int timer_remaining_last_s_{-1};  // dedup for timer sensor
+
   bool comp_cooldown_elapsed_();
   bool valve_settled_();
+  std::string compute_state_();
+  float timer_remaining_s_();
+  void publish_sensors_();
   uint8_t build_cmd_(climate::ClimateMode mode, climate::ClimateFanMode fan);
   void send_frame_(uint8_t cmd);
 };

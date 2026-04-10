@@ -30,5 +30,16 @@ climate:
   - platform: actron_b812
     name: "Aircon"
     transmitter_id: ac_tx
-    compressor_cooldown: 5s
-    valve_settle_time: 5s
+    compressor_cooldown: 8s
+    valve_settle_time: 8s
+    compressor_running:
+      name: "Aircon Compressor Running"
+    state:
+      name: "Aircon State"
+    #   on_value:
+    #     then:
+    #       - text_sensor.template.publish:
+    #           id: ac_state_mirror
+    #           state: !lambda 'return x;'
+    timer_remaining:
+      name: "Aircon Timer Remaining"
