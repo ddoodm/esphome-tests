@@ -1,0 +1,51 @@
+esphome:
+  name: hello-rgb
+  friendly_name: Hello RGB
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+# Serial logging - watch with: esphome logs hello-rgb.yaml
+logger:
+  level: DEBUG
+
+# No api: block = no Home Assistant connection needed
+# No ota: block = simpler for now
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  
+  # Fallback AP if WiFi fails
+  ap:
+    ssid: "Hello-RGB-Fallback"
+    password: "12345678"
+
+# Onboard RGB LED (WS2812 on most C3 Zero boards)
+light:
+  - platform: esp32_rmt_led_strip
+    rgb_order: GRB
+    pin: GPIO10
+    num_leds: 1
+    chipset: WS2812
+    name: "Onboard LED"
+    id: onboard_led
+    effects:
+      - pulse:
+          name: "Pulse"
+          min_brightness: 20%
+          max_brightness: 100%
+
+# Cycle colors on boot to prove it works
+interval:
+  - interval: 2s
+    then:
+      - light.turn_on:
+          id: onboard_led
+          brightness: 50%
+          red: !lambda 'return random_float();'
+          green: !lambda 'return random_float();'
+          blue: !lambda 'return random_float();'
+      - logger.log: "Color changed!"
