@@ -21,6 +21,22 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+    on_time_sync:
+      then:
+        - lambda: 'id(my_rtc).write_time();'  # Write NTP time to RTC
+        - logger.log: "Synced RTC to NTP time"
+  - platform: pcf85063
+    id: my_rtc
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    id: wifi_signal_db
+    update_interval: 5s
+
 # Quad SPI bus for display
 spi:
   id: quad_spi
@@ -75,6 +91,18 @@ switch:
     pin: 16
     name: "Battery Enable"
 
+interval:
+  - interval: 1s
+    then:
+      - lvgl.label.update:
+          id: time_label
+          text: !lambda |-
+            auto t = id(my_rtc).now();
+            if (!t.is_valid()) return std::string("--:--:--");
+            char buf[10];
+            snprintf(buf, sizeof(buf), "%02d:%02d:%02d", t.hour, t.minute, t.second);
+            return std::string(buf);
+
 lvgl:
   pages:
     - id: main_page
@@ -82,5 +110,14 @@ lvgl:
       widgets:
         - label:
             align: CENTER
+            y: -60
             text: "Hello from DDOODM!"
             text_color: 0xFFFFFF
+            text_font: montserrat_24
+        - label:
+            id: time_label
+            align: CENTER
+            y: 20
+            text: "--:--:--"
+            text_color: 0xFFFFFF
+            text_font: montserrat_48
