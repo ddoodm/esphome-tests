@@ -1,0 +1,66 @@
+#pragma once
+
+#include "esphome/components/climate/climate.h"
+#include "esphome/components/remote_transmitter/remote_transmitter.h"
+#include "esphome/core/component.h"
+
+namespace esphome {
+namespace actron_b812 {
+
+// Bit positions (MSB first, transmission order)
+static const uint8_t BIT_FS3  = (1 << 7);  // Fan high
+static const uint8_t BIT_FRM1 = (1 << 6);  // Always 1
+static const uint8_t BIT_FRM2 = (1 << 5);  // Always 1
+static const uint8_t BIT_CALL = (1 << 4);  // Calling for conditioning
+static const uint8_t BIT_COMP = (1 << 3);  // Compressor on
+static const uint8_t BIT_FS1  = (1 << 2);  // Fan low
+static const uint8_t BIT_HEAT = (1 << 1);  // Heat mode (vs cool)
+static const uint8_t BIT_FS2  = (1 << 0);  // Fan mid
+
+static const uint8_t CMD_OFF  = BIT_FRM1 | BIT_FRM2;
+
+class ActronB812Climate : public climate::Climate, public PollingComponent {
+ public:
+  ActronB812Climate() : PollingComponent(222) {}
+
+  void set_transmitter(remote_transmitter::RemoteTransmitterComponent *tx) {
+    transmitter_ = tx;
+  }
+  void set_compressor_cooldown(uint32_t ms) { comp_cooldown_ms_ = ms; }
+  void set_valve_settle_time(uint32_t ms) { valve_settle_ms_ = ms; }
+
+  void setup() override;
+  void update() override;  // Called every 222ms — sends current frame
+  void control(const climate::ClimateCall &call) override;
+  climate::ClimateTraits traits() override;
+
+ protected:
+  remote_transmitter::RemoteTransmitterComponent *transmitter_{nullptr};
+
+  // What we are actually transmitting right now
+  uint8_t active_cmd_{CMD_OFF};
+
+  // What HA has asked for — may differ from active if we're waiting on a timer
+  climate::ClimateMode pending_mode_{climate::CLIMATE_MODE_OFF};
+  climate::ClimateFanMode pending_fan_{climate::CLIMATE_FAN_LOW};
+  bool pending_change_{false};
+
+  // Compressor protection
+  uint32_t comp_cooldown_ms_{3 * 60 * 1000};  // time comp must be off before restarting
+  bool comp_running_{false};
+  uint32_t comp_off_time_{0};
+  bool comp_timer_armed_{false};  // only true after comp has actually run and stopped
+
+  // Reversing valve settle (Heat→Cool only)
+  uint32_t valve_settle_ms_{30 * 1000};  // extra time after HEAT cleared before comp restarts
+  uint32_t valve_switch_time_{0};
+  bool valve_timer_armed_{false};
+
+  bool comp_cooldown_elapsed_();
+  bool valve_settled_();
+  uint8_t build_cmd_(climate::ClimateMode mode, climate::ClimateFanMode fan);
+  void send_frame_(uint8_t cmd);
+};
+
+}  // namespace actron_b812
+}  // namespace esphome
