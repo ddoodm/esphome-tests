@@ -37,9 +37,8 @@ climate:
     transmitter_id: ac_tx
     temperature_sensor_id: room_temp
     hysteresis: 0.5         # degrees C, optional — defaults to 0.5
-    compressor_cooldown: 8s
-    valve_settle_time: 8s
-    auto_mode: dual
+    compressor_cooldown: 3min
+    valve_settle_time: 30s
     compressor_running:
       name: "Aircon Compressor Running"
     state:
