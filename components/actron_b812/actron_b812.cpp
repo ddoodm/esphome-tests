@@ -9,7 +9,11 @@ static const char *TAG = "actron_b812";
 climate::ClimateTraits ActronB812Climate::traits() {
   auto traits = climate::ClimateTraits();
   traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE |
-                           climate::CLIMATE_SUPPORTS_TWO_POINT_TARGET_TEMPERATURE);
+                           climate::CLIMATE_SUPPORTS_TWO_POINT_TARGET_TEMPERATURE |
+                           climate::CLIMATE_SUPPORTS_ACTION);
+  traits.set_visual_min_temperature(16);
+  traits.set_visual_max_temperature(30);
+  traits.set_visual_target_temperature_step(0.5);
   traits.set_supported_modes({
     climate::CLIMATE_MODE_OFF,
     climate::CLIMATE_MODE_COOL,
@@ -27,6 +31,16 @@ climate::ClimateTraits ActronB812Climate::traits() {
 
 void ActronB812Climate::setup() {
   active_cmd_ = CMD_OFF;
+
+  // Seed sensible defaults so HA shows the dial immediately on first boot.
+  // ESPHome's base Climate class restores these from flash on subsequent boots.
+  if (std::isnan(this->target_temperature))
+    this->target_temperature = 22.0f;
+  if (std::isnan(this->target_temperature_low))
+    this->target_temperature_low = 20.0f;
+  if (std::isnan(this->target_temperature_high))
+    this->target_temperature_high = 24.0f;
+
   if (temperature_sensor_) {
     temperature_sensor_->add_on_state_callback([this](float v) {
       this->current_temperature = v;
