@@ -37,6 +37,7 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   void set_valve_settle_time(uint32_t ms) { valve_settle_ms_ = ms; }
   void set_temperature_sensor(sensor::Sensor *s) { temperature_sensor_ = s; }
   void set_hysteresis(float h) { hysteresis_ = h; }
+  void set_auto_dual_setpoint(bool v) { auto_dual_setpoint_ = v; }
 
   void set_compressor_running_sensor(binary_sensor::BinarySensor *s) { compressor_running_sensor_ = s; }
   void set_state_sensor(text_sensor::TextSensor *s) { state_sensor_ = s; }
@@ -62,6 +63,7 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   sensor::Sensor *temperature_sensor_{nullptr};
   float hysteresis_{0.5f};
   ThermostatDirection thermostat_direction_{THERMO_OFF};
+  bool auto_dual_setpoint_{false};
 
   // Compressor protection
   uint32_t comp_cooldown_ms_{3 * 60 * 1000};  // time comp must be off before restarting

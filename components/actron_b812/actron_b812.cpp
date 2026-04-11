@@ -8,11 +8,13 @@ static const char *TAG = "actron_b812";
 
 climate::ClimateTraits ActronB812Climate::traits() {
   auto traits = climate::ClimateTraits();
-  traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE |
-                           climate::CLIMATE_SUPPORTS_TWO_POINT_TARGET_TEMPERATURE |
-                           climate::CLIMATE_SUPPORTS_ACTION);
-  traits.set_visual_min_temperature(16);
-  traits.set_visual_max_temperature(30);
+  uint32_t flags = climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE |
+                   climate::CLIMATE_SUPPORTS_ACTION;
+  if (auto_dual_setpoint_)
+    flags |= climate::CLIMATE_SUPPORTS_TWO_POINT_TARGET_TEMPERATURE;
+  traits.add_feature_flags(flags);
+  traits.set_visual_min_temperature(19);
+  traits.set_visual_max_temperature(29);
   traits.set_visual_target_temperature_step(0.5);
   traits.set_supported_modes({
     climate::CLIMATE_MODE_OFF,
@@ -36,10 +38,12 @@ void ActronB812Climate::setup() {
   // ESPHome's base Climate class restores these from flash on subsequent boots.
   if (std::isnan(this->target_temperature))
     this->target_temperature = 22.0f;
-  if (std::isnan(this->target_temperature_low))
-    this->target_temperature_low = 20.0f;
-  if (std::isnan(this->target_temperature_high))
-    this->target_temperature_high = 24.0f;
+  if (auto_dual_setpoint_) {
+    if (std::isnan(this->target_temperature_low))
+      this->target_temperature_low = 20.0f;
+    if (std::isnan(this->target_temperature_high))
+      this->target_temperature_high = 24.0f;
+  }
 
   if (temperature_sensor_) {
     temperature_sensor_->add_on_state_callback([this](float v) {
@@ -210,39 +214,43 @@ void ActronB812Climate::publish_sensors_() {
 }
 
 void ActronB812Climate::evaluate_thermostat_() {
-  if (std::isnan(this->current_temperature))
-    return;
-  float t = this->current_temperature;
   ThermostatDirection want = thermostat_direction_;
 
   if (pending_mode_ == climate::CLIMATE_MODE_COOL) {
-    float tgt = this->target_temperature;
-    if (std::isnan(tgt)) return;
-    if (thermostat_direction_ != THERMO_COOL && t > tgt + hysteresis_)
-      want = THERMO_COOL;
-    else if (thermostat_direction_ == THERMO_COOL && t < tgt - hysteresis_)
-      want = THERMO_OFF;
+    want = THERMO_COOL;
 
   } else if (pending_mode_ == climate::CLIMATE_MODE_HEAT) {
-    float tgt = this->target_temperature;
-    if (std::isnan(tgt)) return;
-    if (thermostat_direction_ != THERMO_HEAT && t < tgt - hysteresis_)
-      want = THERMO_HEAT;
-    else if (thermostat_direction_ == THERMO_HEAT && t > tgt + hysteresis_)
-      want = THERMO_OFF;
+    want = THERMO_HEAT;
 
   } else if (pending_mode_ == climate::CLIMATE_MODE_HEAT_COOL) {
-    float lo = this->target_temperature_low;
-    float hi = this->target_temperature_high;
-    if (std::isnan(lo) || std::isnan(hi)) return;
-    if (t > hi + hysteresis_)
-      want = THERMO_COOL;
-    else if (t < lo - hysteresis_)
-      want = THERMO_HEAT;
-    else if (thermostat_direction_ == THERMO_COOL && t < hi - hysteresis_)
-      want = THERMO_OFF;
-    else if (thermostat_direction_ == THERMO_HEAT && t > lo + hysteresis_)
-      want = THERMO_OFF;
+    if (std::isnan(this->current_temperature))
+      return;
+    float t = this->current_temperature;
+
+    if (auto_dual_setpoint_) {
+      float lo = this->target_temperature_low;
+      float hi = this->target_temperature_high;
+      if (std::isnan(lo) || std::isnan(hi)) return;
+      if (t > hi + hysteresis_)
+        want = THERMO_COOL;
+      else if (t < lo - hysteresis_)
+        want = THERMO_HEAT;
+      else if (thermostat_direction_ == THERMO_COOL && t < hi - hysteresis_)
+        want = THERMO_OFF;
+      else if (thermostat_direction_ == THERMO_HEAT && t > lo + hysteresis_)
+        want = THERMO_OFF;
+    } else {
+      float tgt = this->target_temperature;
+      if (std::isnan(tgt)) return;
+      if (t > tgt + hysteresis_)
+        want = THERMO_COOL;
+      else if (t < tgt - hysteresis_)
+        want = THERMO_HEAT;
+      else if (thermostat_direction_ == THERMO_COOL && t < tgt)
+        want = THERMO_OFF;
+      else if (thermostat_direction_ == THERMO_HEAT && t > tgt)
+        want = THERMO_OFF;
+    }
 
   } else {
     want = THERMO_OFF;
@@ -251,15 +259,17 @@ void ActronB812Climate::evaluate_thermostat_() {
   if (want != thermostat_direction_) {
     thermostat_direction_ = want;
     pending_change_ = true;
-    ESP_LOGD(TAG, "Thermostat -> %s (%.1f°C)",
-             want == THERMO_COOL ? "cool" : want == THERMO_HEAT ? "heat" : "idle", t);
+    ESP_LOGD(TAG, "Thermostat -> %s",
+             want == THERMO_COOL ? "cool" : want == THERMO_HEAT ? "heat" : "idle");
   }
 }
 
 climate::ClimateMode ActronB812Climate::effective_mode_() {
-  if (pending_mode_ == climate::CLIMATE_MODE_COOL ||
-      pending_mode_ == climate::CLIMATE_MODE_HEAT ||
-      pending_mode_ == climate::CLIMATE_MODE_HEAT_COOL) {
+  if (pending_mode_ == climate::CLIMATE_MODE_COOL)
+    return climate::CLIMATE_MODE_COOL;
+  if (pending_mode_ == climate::CLIMATE_MODE_HEAT)
+    return climate::CLIMATE_MODE_HEAT;
+  if (pending_mode_ == climate::CLIMATE_MODE_HEAT_COOL) {
     switch (thermostat_direction_) {
       case THERMO_COOL: return climate::CLIMATE_MODE_COOL;
       case THERMO_HEAT: return climate::CLIMATE_MODE_HEAT;
@@ -275,6 +285,10 @@ void ActronB812Climate::update_action_() {
     a = climate::CLIMATE_ACTION_OFF;
   else if (pending_mode_ == climate::CLIMATE_MODE_FAN_ONLY)
     a = climate::CLIMATE_ACTION_FAN;
+  else if (pending_mode_ == climate::CLIMATE_MODE_COOL)
+    a = climate::CLIMATE_ACTION_COOLING;
+  else if (pending_mode_ == climate::CLIMATE_MODE_HEAT)
+    a = climate::CLIMATE_ACTION_HEATING;
   else if (thermostat_direction_ == THERMO_COOL)
     a = climate::CLIMATE_ACTION_COOLING;
   else if (thermostat_direction_ == THERMO_HEAT)

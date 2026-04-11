@@ -27,11 +27,9 @@ remote_transmitter:
   carrier_duty_percent: 100%
 
 sensor:
-  - platform: template
+  - platform: homeassistant
     id: room_temp
-    # Replace with actual temperature sensor
-    lambda: return NAN;
-    update_interval: 30s
+    entity_id: sensor.desk_temp_sensor_atc_a199_temperature
 
 climate:
   - platform: actron_b812
@@ -41,6 +39,7 @@ climate:
     hysteresis: 0.5         # degrees C, optional — defaults to 0.5
     compressor_cooldown: 8s
     valve_settle_time: 8s
+    auto_mode: dual
     compressor_running:
       name: "Aircon Compressor Running"
     state:
