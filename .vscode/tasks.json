@@ -1,0 +1,20 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Regenerate clangd config from idedata",
+      "type": "shell",
+      "command": "python3",
+      "args": [
+        "-c",
+        "import json, sys; data = json.load(open('.esphome/idedata/actron-test.json')); all_includes = data['includes']['build'] + data['includes']['toolchain']; defines = data['defines']; yaml_flag = lambda f: f\"    - '{f}'\" if '\"' in f else f'    - {f}'; lines = ['CompileFlags:', '  Add:', '    - -std=gnu++23']; [lines.append(yaml_flag(f'-D{d}')) for d in defines]; [lines.append(yaml_flag(f'-I{i}')) for i in all_includes]; open('.clangd', 'w').write('\\n'.join(lines) + '\\n'); print('Regenerated .clangd')"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
