@@ -8,11 +8,13 @@ static const char *TAG = "actron_b812";
 
 climate::ClimateTraits ActronB812Climate::traits() {
   auto traits = climate::ClimateTraits();
-  traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE);
+  traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE |
+                           climate::CLIMATE_SUPPORTS_TWO_POINT_TARGET_TEMPERATURE);
   traits.set_supported_modes({
     climate::CLIMATE_MODE_OFF,
     climate::CLIMATE_MODE_COOL,
     climate::CLIMATE_MODE_HEAT,
+    climate::CLIMATE_MODE_HEAT_COOL,
     climate::CLIMATE_MODE_FAN_ONLY,
   });
   traits.set_supported_fan_modes({
@@ -25,6 +27,13 @@ climate::ClimateTraits ActronB812Climate::traits() {
 
 void ActronB812Climate::setup() {
   active_cmd_ = CMD_OFF;
+  if (temperature_sensor_) {
+    temperature_sensor_->add_on_state_callback([this](float v) {
+      this->current_temperature = v;
+      evaluate_thermostat_();
+      update_action_();
+    });
+  }
   publish_sensors_();
 }
 
@@ -35,12 +44,20 @@ void ActronB812Climate::control(const climate::ClimateCall &call) {
     pending_fan_ = *call.get_fan_mode();
   if (call.get_target_temperature().has_value())
     this->target_temperature = *call.get_target_temperature();
+  if (call.get_target_temperature_low().has_value())
+    this->target_temperature_low = *call.get_target_temperature_low();
+  if (call.get_target_temperature_high().has_value())
+    this->target_temperature_high = *call.get_target_temperature_high();
+
+  evaluate_thermostat_();
 
   // Publish desired state immediately so the HA UI reflects the change
   // even while we may be waiting for the compressor protection timer.
   this->mode = pending_mode_;
   this->fan_mode = pending_fan_;
   this->publish_state();
+
+  update_action_();
 
   pending_change_ = true;
 }
@@ -59,7 +76,7 @@ void ActronB812Climate::update() {
   }
 
   if (pending_change_) {
-    uint8_t desired = build_cmd_(pending_mode_, pending_fan_);
+    uint8_t desired = build_cmd_(effective_mode_(), pending_fan_);
     bool comp_desired = (desired & BIT_COMP) != 0;
     bool heat_direction_change = comp_desired && ((desired & BIT_HEAT) != (active_cmd_ & BIT_HEAT));
 
@@ -120,6 +137,13 @@ void ActronB812Climate::update() {
     }
   }
 
+  // Override CALL bit based on thermostat desire, independent of compressor state.
+  // This signals to the AC unit that conditioning is wanted even during cooldown waits.
+  if (thermostat_direction_ != THERMO_OFF)
+    active_cmd_ |= BIT_CALL;
+  else
+    active_cmd_ &= ~BIT_CALL;
+
   send_frame_(active_cmd_);
   publish_sensors_();
 }
@@ -168,6 +192,84 @@ void ActronB812Climate::publish_sensors_() {
       timer_remaining_last_s_ = remaining_s;
       timer_remaining_sensor_->publish_state(static_cast<float>(remaining_s));
     }
+  }
+}
+
+void ActronB812Climate::evaluate_thermostat_() {
+  if (std::isnan(this->current_temperature))
+    return;
+  float t = this->current_temperature;
+  ThermostatDirection want = thermostat_direction_;
+
+  if (pending_mode_ == climate::CLIMATE_MODE_COOL) {
+    float tgt = this->target_temperature;
+    if (std::isnan(tgt)) return;
+    if (thermostat_direction_ != THERMO_COOL && t > tgt + hysteresis_)
+      want = THERMO_COOL;
+    else if (thermostat_direction_ == THERMO_COOL && t < tgt - hysteresis_)
+      want = THERMO_OFF;
+
+  } else if (pending_mode_ == climate::CLIMATE_MODE_HEAT) {
+    float tgt = this->target_temperature;
+    if (std::isnan(tgt)) return;
+    if (thermostat_direction_ != THERMO_HEAT && t < tgt - hysteresis_)
+      want = THERMO_HEAT;
+    else if (thermostat_direction_ == THERMO_HEAT && t > tgt + hysteresis_)
+      want = THERMO_OFF;
+
+  } else if (pending_mode_ == climate::CLIMATE_MODE_HEAT_COOL) {
+    float lo = this->target_temperature_low;
+    float hi = this->target_temperature_high;
+    if (std::isnan(lo) || std::isnan(hi)) return;
+    if (t > hi + hysteresis_)
+      want = THERMO_COOL;
+    else if (t < lo - hysteresis_)
+      want = THERMO_HEAT;
+    else if (thermostat_direction_ == THERMO_COOL && t < hi - hysteresis_)
+      want = THERMO_OFF;
+    else if (thermostat_direction_ == THERMO_HEAT && t > lo + hysteresis_)
+      want = THERMO_OFF;
+
+  } else {
+    want = THERMO_OFF;
+  }
+
+  if (want != thermostat_direction_) {
+    thermostat_direction_ = want;
+    pending_change_ = true;
+    ESP_LOGD(TAG, "Thermostat -> %s (%.1f°C)",
+             want == THERMO_COOL ? "cool" : want == THERMO_HEAT ? "heat" : "idle", t);
+  }
+}
+
+climate::ClimateMode ActronB812Climate::effective_mode_() {
+  if (pending_mode_ == climate::CLIMATE_MODE_COOL ||
+      pending_mode_ == climate::CLIMATE_MODE_HEAT ||
+      pending_mode_ == climate::CLIMATE_MODE_HEAT_COOL) {
+    switch (thermostat_direction_) {
+      case THERMO_COOL: return climate::CLIMATE_MODE_COOL;
+      case THERMO_HEAT: return climate::CLIMATE_MODE_HEAT;
+      default:          return climate::CLIMATE_MODE_FAN_ONLY;
+    }
+  }
+  return pending_mode_;
+}
+
+void ActronB812Climate::update_action_() {
+  climate::ClimateAction a;
+  if (pending_mode_ == climate::CLIMATE_MODE_OFF)
+    a = climate::CLIMATE_ACTION_OFF;
+  else if (pending_mode_ == climate::CLIMATE_MODE_FAN_ONLY)
+    a = climate::CLIMATE_ACTION_FAN;
+  else if (thermostat_direction_ == THERMO_COOL)
+    a = climate::CLIMATE_ACTION_COOLING;
+  else if (thermostat_direction_ == THERMO_HEAT)
+    a = climate::CLIMATE_ACTION_HEATING;
+  else
+    a = climate::CLIMATE_ACTION_IDLE;
+  if (this->action != a) {
+    this->action = a;
+    this->publish_state();
   }
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <string>
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/climate/climate.h"
@@ -10,6 +11,8 @@
 
 namespace esphome {
 namespace actron_b812 {
+
+enum ThermostatDirection { THERMO_OFF, THERMO_COOL, THERMO_HEAT };
 
 // Bit positions (MSB first, transmission order)
 static const uint8_t BIT_FS3  = (1 << 7);  // Fan high
@@ -32,6 +35,8 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   }
   void set_compressor_cooldown(uint32_t ms) { comp_cooldown_ms_ = ms; }
   void set_valve_settle_time(uint32_t ms) { valve_settle_ms_ = ms; }
+  void set_temperature_sensor(sensor::Sensor *s) { temperature_sensor_ = s; }
+  void set_hysteresis(float h) { hysteresis_ = h; }
 
   void set_compressor_running_sensor(binary_sensor::BinarySensor *s) { compressor_running_sensor_ = s; }
   void set_state_sensor(text_sensor::TextSensor *s) { state_sensor_ = s; }
@@ -52,6 +57,11 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   climate::ClimateMode pending_mode_{climate::CLIMATE_MODE_OFF};
   climate::ClimateFanMode pending_fan_{climate::CLIMATE_FAN_LOW};
   bool pending_change_{false};
+
+  // Thermostat
+  sensor::Sensor *temperature_sensor_{nullptr};
+  float hysteresis_{0.5f};
+  ThermostatDirection thermostat_direction_{THERMO_OFF};
 
   // Compressor protection
   uint32_t comp_cooldown_ms_{3 * 60 * 1000};  // time comp must be off before restarting
@@ -75,6 +85,9 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   std::string compute_state_();
   float timer_remaining_s_();
   void publish_sensors_();
+  void evaluate_thermostat_();
+  climate::ClimateMode effective_mode_();
+  void update_action_();
   uint8_t build_cmd_(climate::ClimateMode mode, climate::ClimateFanMode fan);
   void send_frame_(uint8_t cmd);
 };
