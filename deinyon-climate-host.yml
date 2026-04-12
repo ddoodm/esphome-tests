@@ -1,0 +1,18 @@
+esphome:
+  name: deinyon-climate-host
+
+packages:
+  ui: !include deinyon-climate-ui.yml
+
+host:
+
+display:
+  - platform: sdl
+    id: my_display
+    dimensions:
+      width: 600
+      height: 450
+
+touchscreen:
+  - platform: sdl
+    display: my_display

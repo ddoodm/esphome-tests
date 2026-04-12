@@ -1,0 +1,98 @@
+esphome:
+  name: deinyon-climate
+  friendly_name: Deinyon Climate
+
+packages:
+  ui: !include deinyon-climate-ui.yml
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+  flash_size: 16MB
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+api:
+ota:
+  platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+    on_time_sync:
+      then:
+        - lambda: 'id(my_rtc).write_time();'
+        - logger.log: "Synced RTC to NTP time"
+  - platform: pcf85063
+    id: my_rtc
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    id: wifi_signal_db
+    update_interval: 5s
+
+# Quad SPI bus for display
+spi:
+  id: quad_spi
+  type: quad
+  clk_pin: 10
+  data_pins: [11, 12, 13, 14]
+
+# Display - SH8601 chip, compatible with RM690B0 driver, 450x600
+display:
+  - platform: qspi_dbi
+    id: my_display
+    model: RM690B0
+    data_rate: 80MHz
+    dimensions:
+      width: 450
+      height: 600
+      offset_width: 16
+    rotation: 270°
+    brightness: 255
+    cs_pin: 9
+    reset_pin: 21
+    auto_clear_enabled: false
+    update_interval: never
+
+# I2C bus (shared by touchscreen, IMU, RTC, extended IO)
+i2c:
+  id: my_i2c
+  sda: 47
+  scl: 48
+  scan: true
+
+# Touchscreen (FT6336)
+touchscreen:
+  - platform: ft63x6
+    id: my_touchscreen
+    display: my_display
+    reset_pin: 3
+    transform:
+      swap_xy: true
+      mirror_x: true
+
+# Extended IO expander (TCA9554 = compatible with PCA9554 driver)
+pca9554:
+  - id: extio_hub
+    address: 0x20
+
+switch:
+  - platform: gpio
+    pin: 4
+    id: vcc_enable
+    restore_mode: ALWAYS_ON
+    internal: true
+
+  - platform: gpio
+    pin: 16
+    name: "Battery Enable"

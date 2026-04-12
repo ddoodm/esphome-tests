@@ -1,21 +1,19 @@
+# Shared LVGL UI — included by both host and device configs via packages.
+# Both configs must define:
+#   - display id: my_display
+#   - touchscreen (any platform)
+# When wiring real sensors, reference them by ID here and define stubs
+# in the host config with matching IDs.
+
 esphome:
-  name: lvgl-test
   on_boot:
     then:
       - lambda: lv_obj_clear_flag(id(arc_current), LV_OBJ_FLAG_CLICKABLE);
 
-host:
-
-display:
-  - platform: sdl
-    id: my_display
-    dimensions:
-      width: 600
-      height: 450
-
-touchscreen:
-  - platform: sdl
-    display: my_display
+globals:
+  - id: g_setpoint_arc
+    type: int
+    initial_value: '43'
 
 font:
   - file: "gfonts://Roboto"
@@ -129,11 +127,18 @@ lvgl:
                     height: 22
                   on_value:
                     then:
+                      # Capture the arc value into a global so nested lambdas can read it.
+                      # Nested action lambdas (e.g. lvgl.label.update text:) run in a
+                      # different lambda context where the outer `x` resolves to 0.
+                      - globals.set:
+                          id: g_setpoint_arc
+                          value: !lambda return (int)x;
                       # Keep setpoint fill arc in sync
                       - lvgl.arc.update:
                           id: arc_track
                           value: !lambda return x;
                       # Show diff arc only when setpoint > current (heating gap)
+                      # TODO: replace 21 with id(current_temp).state once sensor is wired
                       - if:
                           condition:
                             lambda: return x > 21;
@@ -144,7 +149,7 @@ lvgl:
                             - lvgl.arc.update:
                                 id: arc_diff
                                 start_angle: !lambda return (int)(135.0f + 21.0f / 100.0f * 270.0f);
-                                end_angle: !lambda return (int)(135.0f + (float)x / 100.0f * 270.0f);
+                                end_angle: !lambda return (int)(135.0f + (float)id(g_setpoint_arc) / 100.0f * 270.0f);
                           else:
                             - lvgl.widget.update:
                                 id: arc_diff
@@ -154,7 +159,7 @@ lvgl:
                           id: temp_label
                           text: !lambda |-
                             char buf[8];
-                            snprintf(buf, sizeof(buf), "%d", x);
+                            snprintf(buf, sizeof(buf), "%d", id(g_setpoint_arc));
                             return std::string(buf);
                   widgets:
                     - obj:
@@ -170,7 +175,7 @@ lvgl:
                         widgets:
                           - label:
                               id: temp_label
-                              text: "22"
+                              text: "--"
                               text_color: 0xFF7A00
                               text_font: roboto_regular
                           - label:
