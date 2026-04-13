@@ -21,7 +21,7 @@ font:
     size: 100
   - file: "gfonts://Roboto"
     id: roboto_unit
-    size: 24
+    size: 32
 
 lvgl:
   displays:
@@ -50,10 +50,10 @@ lvgl:
                   value: 43
                   width: 100%
                   height: 100%
-                  arc_width: 20
+                  arc_width: 32
                   indicator:
                     arc_color: 0xFF7A00
-                    arc_width: 20
+                    arc_width: 32
                   knob:
                     bg_opa: transp
                     border_opa: transp
@@ -78,7 +78,7 @@ lvgl:
                   arc_width: 0
                   indicator:
                     arc_color: 0xCE4000
-                    arc_width: 20
+                    arc_width: 32
                   knob:
                     bg_opa: transp
                     border_opa: transp
@@ -97,7 +97,7 @@ lvgl:
                   height: 100%
                   arc_width: 0
                   indicator:
-                    arc_width: 20
+                    arc_width: 32
                     arc_opa: 0%
                   knob:
                     bg_color: 0x000000
@@ -117,7 +117,7 @@ lvgl:
                   height: 100%
                   arc_width: 0
                   indicator:
-                    arc_width: 20
+                    arc_width: 32
                     arc_opa: 0%
                   knob:
                     bg_color: 0xFFFFFF
@@ -176,11 +176,11 @@ lvgl:
                           - label:
                               id: temp_label
                               text: "--"
-                              text_color: 0xFF7A00
+                              text_color: 0xAAAAAA
                               text_font: roboto_regular
                           - label:
                               id: unit_label
                               text: "°C"
-                              text_color: 0xFF7A00
+                              text_color: 0xAAAAAA
                               text_font: roboto_unit
-                              pad_bottom: 24
+                              pad_bottom: 20

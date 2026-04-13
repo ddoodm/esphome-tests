@@ -42,6 +42,7 @@ void ActronB812Climate::setup() {
       this->current_temperature = v;
       evaluate_thermostat_();
       update_action_();
+      this->publish_state();
     });
   }
   publish_sensors_();
