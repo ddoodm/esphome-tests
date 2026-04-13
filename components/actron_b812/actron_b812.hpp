@@ -79,6 +79,8 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   text_sensor::TextSensor *state_sensor_{nullptr};
   sensor::Sensor *timer_remaining_sensor_{nullptr};
   int timer_remaining_last_s_{-1};  // dedup for timer sensor
+  std::string state_last_{"__unset__"};  // dedup for state sensor
+  int comp_running_last_{-1};  // dedup for compressor sensor (-1 = unset)
 
   bool comp_cooldown_elapsed_();
   bool valve_settled_();

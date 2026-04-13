@@ -188,11 +188,21 @@ float ActronB812Climate::timer_remaining_s_() {
 }
 
 void ActronB812Climate::publish_sensors_() {
-  if (compressor_running_sensor_)
-    compressor_running_sensor_->publish_state(comp_running_);
+  if (compressor_running_sensor_) {
+    int running = comp_running_ ? 1 : 0;
+    if (running != comp_running_last_) {
+      comp_running_last_ = running;
+      compressor_running_sensor_->publish_state(comp_running_);
+    }
+  }
 
-  if (state_sensor_)
-    state_sensor_->publish_state(compute_state_());
+  if (state_sensor_) {
+    std::string s = compute_state_();
+    if (s != state_last_) {
+      state_last_ = s;
+      state_sensor_->publish_state(s);
+    }
+  }
 
   if (timer_remaining_sensor_) {
     int remaining_s = static_cast<int>(timer_remaining_s_());
@@ -210,17 +220,21 @@ void ActronB812Climate::evaluate_thermostat_() {
   if (pending_mode_ == climate::CLIMATE_MODE_COOL) {
     float tgt = this->target_temperature;
     if (std::isnan(t) || std::isnan(tgt)) return;
+    // Start cooling only once temp rises hysteresis above target (avoids short-cycling).
+    // Stop as soon as temp reaches target — no overshoot on the off side.
     if (thermostat_direction_ != THERMO_COOL && t > tgt + hysteresis_)
       want = THERMO_COOL;
-    else if (thermostat_direction_ == THERMO_COOL && t < tgt - hysteresis_)
+    else if (thermostat_direction_ == THERMO_COOL && t < tgt)
       want = THERMO_OFF;
 
   } else if (pending_mode_ == climate::CLIMATE_MODE_HEAT) {
     float tgt = this->target_temperature;
     if (std::isnan(t) || std::isnan(tgt)) return;
+    // Start heating only once temp drops hysteresis below target (avoids short-cycling).
+    // Stop as soon as temp reaches target — no overshoot on the off side.
     if (thermostat_direction_ != THERMO_HEAT && t < tgt - hysteresis_)
       want = THERMO_HEAT;
-    else if (thermostat_direction_ == THERMO_HEAT && t > tgt + hysteresis_)
+    else if (thermostat_direction_ == THERMO_HEAT && t > tgt)
       want = THERMO_OFF;
 
   } else if (pending_mode_ == climate::CLIMATE_MODE_HEAT_COOL) {

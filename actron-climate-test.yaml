@@ -30,6 +30,7 @@ sensor:
   - platform: homeassistant
     id: room_temp
     entity_id: sensor.desk_temp_sensor_atc_a199_temperature
+    accuracy_decimals: 2
 
 climate:
   - platform: actron_b812
