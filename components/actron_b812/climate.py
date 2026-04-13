@@ -15,6 +15,7 @@ CONF_COMPRESSOR_COOLDOWN = "compressor_cooldown"
 CONF_VALVE_SETTLE_TIME = "valve_settle_time"
 CONF_TEMPERATURE_SENSOR = "temperature_sensor_id"
 CONF_HYSTERESIS = "hysteresis"
+CONF_AUTO_DEADBAND = "auto_deadband"
 CONF_COMPRESSOR_RUNNING = "compressor_running"
 CONF_STATE_SENSOR = "state"
 CONF_TIMER_REMAINING = "timer_remaining"
@@ -27,6 +28,7 @@ CONFIG_SCHEMA = climate.climate_schema(ActronB812Climate).extend({
     cv.Optional(CONF_VALVE_SETTLE_TIME, default="30s"): cv.positive_time_period_milliseconds,
     cv.Optional(CONF_TEMPERATURE_SENSOR): cv.use_id(sensor.Sensor),
     cv.Optional(CONF_HYSTERESIS, default=0.5): cv.positive_float,
+    cv.Optional(CONF_AUTO_DEADBAND, default=1.0): cv.positive_float,
     cv.Optional(CONF_COMPRESSOR_RUNNING): binary_sensor.binary_sensor_schema(),
     cv.Optional(CONF_STATE_SENSOR): text_sensor.text_sensor_schema(),
     cv.Optional(CONF_TIMER_REMAINING): sensor.sensor_schema(
@@ -50,6 +52,7 @@ async def to_code(config):
         s = await cg.get_variable(config[CONF_TEMPERATURE_SENSOR])
         cg.add(var.set_temperature_sensor(s))
     cg.add(var.set_hysteresis(config[CONF_HYSTERESIS]))
+    cg.add(var.set_auto_deadband(config[CONF_AUTO_DEADBAND]))
 
     if CONF_COMPRESSOR_RUNNING in config:
         bs = await binary_sensor.new_binary_sensor(config[CONF_COMPRESSOR_RUNNING])

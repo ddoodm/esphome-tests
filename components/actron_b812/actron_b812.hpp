@@ -37,6 +37,7 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   void set_valve_settle_time(uint32_t ms) { valve_settle_ms_ = ms; }
   void set_temperature_sensor(sensor::Sensor *s) { temperature_sensor_ = s; }
   void set_hysteresis(float h) { hysteresis_ = h; }
+  void set_auto_deadband(float d) { auto_deadband_ = d; }
 
   void set_compressor_running_sensor(binary_sensor::BinarySensor *s) { compressor_running_sensor_ = s; }
   void set_state_sensor(text_sensor::TextSensor *s) { state_sensor_ = s; }
@@ -61,7 +62,12 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   // Thermostat
   sensor::Sensor *temperature_sensor_{nullptr};
   float hysteresis_{0.5f};
+  float auto_deadband_{1.0f};
   ThermostatDirection thermostat_direction_{THERMO_OFF};
+  // In HEAT_COOL mode: tracks which direction was last active so we can apply
+  // auto_deadband_ before allowing the *opposite* direction to engage.
+  // Cleared to THERMO_OFF on mode change so fresh-engage uses hysteresis_ only.
+  ThermostatDirection auto_last_direction_{THERMO_OFF};
 
   // Compressor protection
   uint32_t comp_cooldown_ms_{3 * 60 * 1000};  // time comp must be off before restarting

@@ -49,8 +49,11 @@ void ActronB812Climate::setup() {
 }
 
 void ActronB812Climate::control(const climate::ClimateCall &call) {
-  if (call.get_mode().has_value())
+  if (call.get_mode().has_value()) {
+    if (*call.get_mode() != pending_mode_)
+      auto_last_direction_ = THERMO_OFF;  // fresh engage — don't apply cross-mode deadband yet
     pending_mode_ = *call.get_mode();
+  }
   if (call.get_fan_mode().has_value())
     pending_fan_ = *call.get_fan_mode();
   if (call.get_target_temperature().has_value())
@@ -240,20 +243,32 @@ void ActronB812Climate::evaluate_thermostat_() {
   } else if (pending_mode_ == climate::CLIMATE_MODE_HEAT_COOL) {
     float tgt = this->target_temperature;
     if (std::isnan(t) || std::isnan(tgt)) return;
-    if (t > tgt + hysteresis_)
-      want = THERMO_COOL;
-    else if (t < tgt - hysteresis_)
-      want = THERMO_HEAT;
-    else if (thermostat_direction_ == THERMO_COOL && t < tgt)
-      want = THERMO_OFF;
-    else if (thermostat_direction_ == THERMO_HEAT && t > tgt)
-      want = THERMO_OFF;
+
+    if (thermostat_direction_ == THERMO_HEAT) {
+      if (t > tgt)
+        want = THERMO_OFF;
+    } else if (thermostat_direction_ == THERMO_COOL) {
+      if (t < tgt)
+        want = THERMO_OFF;
+    } else {
+      // Idle. If we just came from the opposite direction, require the full
+      // auto_deadband_ before engaging it — prevents overshoot from triggering
+      // a mode flip. Same-direction re-engage and fresh-engage use hysteresis_.
+      float cool_thresh = (auto_last_direction_ == THERMO_HEAT) ? tgt + auto_deadband_ : tgt + hysteresis_;
+      float heat_thresh = (auto_last_direction_ == THERMO_COOL) ? tgt - auto_deadband_ : tgt - hysteresis_;
+      if (t > cool_thresh)
+        want = THERMO_COOL;
+      else if (t < heat_thresh)
+        want = THERMO_HEAT;
+    }
 
   } else {
     want = THERMO_OFF;
   }
 
   if (want != thermostat_direction_) {
+    if (want != THERMO_OFF)
+      auto_last_direction_ = want;
     thermostat_direction_ = want;
     pending_change_ = true;
     ESP_LOGD(TAG, "Thermostat -> %s",
