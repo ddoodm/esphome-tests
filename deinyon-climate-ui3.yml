@@ -10,8 +10,26 @@
 esphome:
   on_boot:
     then:
-      # arc_current knob is for display only — block all touch on it
-      - lambda: lv_obj_clear_flag(id(arc_current), LV_OBJ_FLAG_CLICKABLE);
+      - lambda: |-
+          // arc_current knob is for display only — block all touch on it
+          lv_obj_clear_flag(id(arc_current), LV_OBJ_FLAG_CLICKABLE);
+          // Button press flash: white border instant on press, ease-out decay on release
+          static lv_style_prop_t _props[] = {LV_STYLE_BORDER_COLOR, LV_STYLE_PROP_INV};
+          static lv_style_transition_dsc_t _t_in, _t_out;
+          lv_style_transition_dsc_init(&_t_in,  _props, lv_anim_path_linear,   80,  0, NULL);
+          lv_style_transition_dsc_init(&_t_out, _props, lv_anim_path_ease_out, 500, 0, NULL);
+          static lv_style_t _s_pressed, _s_default;
+          lv_style_init(&_s_pressed);
+          lv_style_set_border_color(&_s_pressed, lv_color_hex(0xFFFFFF));
+          lv_style_set_transition(&_s_pressed, &_t_in);
+          lv_style_init(&_s_default);
+          lv_style_set_transition(&_s_default, &_t_out);
+          lv_obj_t *_btns[] = {id(btn_fan), id(btn_fan_auto), id(btn_mode),
+                                id(btn_temp_minus), id(btn_power), id(btn_temp_plus)};
+          for (int i = 0; i < 6; i++) {
+            lv_obj_add_style(_btns[i], &_s_default, LV_STATE_DEFAULT);
+            lv_obj_add_style(_btns[i], &_s_pressed, LV_STATE_PRESSED);
+          }
 
 globals:
   - id: g_setpoint
@@ -265,34 +283,50 @@ lvgl:
             on_click:
               then:
                 - lambda: |-
+                    // Snapshot current visual arc position before updating globals —
+                    // this is the correct animation start even mid-animation on rapid taps
+                    int32_t vis = lv_arc_get_value(id(arc_track));
                     if (id(g_setpoint) > 16) {
                       id(g_setpoint) -= 1;
                       id(g_setpoint_arc) = (int)((id(g_setpoint) - 16.0f) / 14.0f * 100.0f);
                     }
-                - lvgl.arc.update:
-                    id: arc_track
-                    value: !lambda return id(g_setpoint_arc);
-                - if:
-                    condition:
-                      lambda: return id(g_setpoint_arc) > 21;
-                    then:
-                      - lvgl.widget.update:
-                          id: arc_diff
-                          hidden: false
-                      - lvgl.arc.update:
-                          id: arc_diff
-                          start_angle: !lambda return (int)(135.0f + 21.0f / 100.0f * 270.0f);
-                          end_angle: !lambda return (int)(135.0f + (float)id(g_setpoint_arc) / 100.0f * 270.0f);
-                    else:
-                      - lvgl.widget.update:
-                          id: arc_diff
-                          hidden: true
-                - lvgl.label.update:
-                    id: temp_label
-                    text: !lambda |-
-                      char buf[4];
-                      snprintf(buf, sizeof(buf), "%d", id(g_setpoint));
-                      return std::string(buf);
+                    int32_t tgt = id(g_setpoint_arc);
+                    // Animate arc_track
+                    lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_value);
+                    {
+                      lv_anim_t a;
+                      lv_anim_init(&a);
+                      lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_value);
+                      lv_anim_set_var(&a, id(arc_track));
+                      lv_anim_set_values(&a, vis, tgt);
+                      lv_anim_set_time(&a, 200);
+                      lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+                      lv_anim_start(&a);
+                    }
+                    // Animate arc_diff end angle in sync (start from visual position)
+                    if (tgt > 21) {
+                      lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                      int32_t ang_from = (vis > 21) ? (int)(135.0f + vis / 100.0f * 270.0f)
+                                                    : (int)(135.0f + 21.0f / 100.0f * 270.0f);
+                      int32_t ang_to   = (int)(135.0f + tgt / 100.0f * 270.0f);
+                      lv_arc_set_bg_start_angle(id(arc_diff), (int)(135.0f + 21.0f / 100.0f * 270.0f));
+                      lv_anim_del(id(arc_diff), (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
+                      {
+                        lv_anim_t a;
+                        lv_anim_init(&a);
+                        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
+                        lv_anim_set_var(&a, id(arc_diff));
+                        lv_anim_set_values(&a, ang_from, ang_to);
+                        lv_anim_set_time(&a, 200);
+                        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+                        lv_anim_start(&a);
+                      }
+                    } else {
+                      lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                    }
+                    char buf[4];
+                    snprintf(buf, sizeof(buf), "%d", id(g_setpoint));
+                    lv_label_set_text(id(temp_label), buf);
             widgets:
               - label:
                   align: CENTER
@@ -346,34 +380,50 @@ lvgl:
             on_click:
               then:
                 - lambda: |-
+                    // Snapshot current visual arc position before updating globals —
+                    // this is the correct animation start even mid-animation on rapid taps
+                    int32_t vis = lv_arc_get_value(id(arc_track));
                     if (id(g_setpoint) < 30) {
                       id(g_setpoint) += 1;
                       id(g_setpoint_arc) = (int)((id(g_setpoint) - 16.0f) / 14.0f * 100.0f);
                     }
-                - lvgl.arc.update:
-                    id: arc_track
-                    value: !lambda return id(g_setpoint_arc);
-                - if:
-                    condition:
-                      lambda: return id(g_setpoint_arc) > 21;
-                    then:
-                      - lvgl.widget.update:
-                          id: arc_diff
-                          hidden: false
-                      - lvgl.arc.update:
-                          id: arc_diff
-                          start_angle: !lambda return (int)(135.0f + 21.0f / 100.0f * 270.0f);
-                          end_angle: !lambda return (int)(135.0f + (float)id(g_setpoint_arc) / 100.0f * 270.0f);
-                    else:
-                      - lvgl.widget.update:
-                          id: arc_diff
-                          hidden: true
-                - lvgl.label.update:
-                    id: temp_label
-                    text: !lambda |-
-                      char buf[4];
-                      snprintf(buf, sizeof(buf), "%d", id(g_setpoint));
-                      return std::string(buf);
+                    int32_t tgt = id(g_setpoint_arc);
+                    // Animate arc_track
+                    lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_value);
+                    {
+                      lv_anim_t a;
+                      lv_anim_init(&a);
+                      lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_value);
+                      lv_anim_set_var(&a, id(arc_track));
+                      lv_anim_set_values(&a, vis, tgt);
+                      lv_anim_set_time(&a, 200);
+                      lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+                      lv_anim_start(&a);
+                    }
+                    // Animate arc_diff end angle in sync (start from visual position)
+                    if (tgt > 21) {
+                      lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                      int32_t ang_from = (vis > 21) ? (int)(135.0f + vis / 100.0f * 270.0f)
+                                                    : (int)(135.0f + 21.0f / 100.0f * 270.0f);
+                      int32_t ang_to   = (int)(135.0f + tgt / 100.0f * 270.0f);
+                      lv_arc_set_bg_start_angle(id(arc_diff), (int)(135.0f + 21.0f / 100.0f * 270.0f));
+                      lv_anim_del(id(arc_diff), (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
+                      {
+                        lv_anim_t a;
+                        lv_anim_init(&a);
+                        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
+                        lv_anim_set_var(&a, id(arc_diff));
+                        lv_anim_set_values(&a, ang_from, ang_to);
+                        lv_anim_set_time(&a, 200);
+                        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+                        lv_anim_start(&a);
+                      }
+                    } else {
+                      lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                    }
+                    char buf[4];
+                    snprintf(buf, sizeof(buf), "%d", id(g_setpoint));
+                    lv_label_set_text(id(temp_label), buf);
             widgets:
               - label:
                   align: CENTER
