@@ -310,6 +310,45 @@ TEST_CASE("Valve held during cooldown when switching heat to off", "[protection]
   h.check_invariants();
 }
 
+TEST_CASE("Regression: switching COOL->HEAT does not start cooling", "[regression]") {
+  // Bug: thermostat_direction_ was not cleared on mode change. If THERMO_COOL was
+  // active from a prior COOL cycle and the user switched to HEAT mode while the
+  // room was warm (no heat demand), evaluate_thermostat_() never cleared
+  // THERMO_COOL, so effective_mode_() returned COOL and the compressor ran in
+  // cooling mode even though the user had selected HEAT.
+  Harness h;
+
+  // Start cooling (room is warm, compressor runs)
+  h.climate.current_temperature = 25.0f;
+  h.set_mode(climate::CLIMATE_MODE_COOL);
+  h.run_for(2000);
+  REQUIRE(h.climate.comp_running_);
+  REQUIRE((h.climate.active_cmd_ & BIT_HEAT) == 0);
+
+  // Switch to HEAT while still warm — no heat demand (23.58 > 23.5 - 0.5 = 23.0)
+  h.climate.current_temperature = 23.58f;
+  h.climate.target_temperature = 23.5f;
+  h.frames.clear();  // only check frames from this point on
+  h.set_mode(climate::CLIMATE_MODE_HEAT);
+
+  // After the mode switch the thermostat direction must not be COOL
+  REQUIRE(h.climate.thermostat_direction_ != THERMO_COOL);
+
+  // Let timers run out — at no point should the compressor run in COOL mode
+  h.run_for(COOLDOWN_MS + SETTLE_MS + 5000);
+
+  for (auto &f : h.frames) {
+    bool comp = f.comp_running;
+    bool heat = (f.cmd & BIT_HEAT) != 0;
+    if (comp) {
+      INFO("t=" << f.time_ms << "ms: compressor running  cmd=" << cmd_hex(f.cmd));
+      CHECK(heat);  // if compressor ever runs, it must be in HEAT (not COOL) mode
+    }
+  }
+
+  h.check_invariants();
+}
+
 TEST_CASE("Rapid mode cycling respects all protections", "[protection]") {
   Harness h;
 

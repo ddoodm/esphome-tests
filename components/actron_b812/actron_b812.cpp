@@ -52,8 +52,13 @@ void ActronB812Climate::setup() {
 
 void ActronB812Climate::control(const climate::ClimateCall &call) {
   if (call.get_mode().has_value()) {
-    if (*call.get_mode() != pending_mode_)
+    if (*call.get_mode() != pending_mode_) {
       auto_deadband_direction_ = THERMO_OFF;  // fresh engage — don't apply cross-mode deadband yet
+      // Clear stale thermostat direction from the old mode so evaluate_thermostat_()
+      // doesn't carry over e.g. THERMO_COOL into a HEAT mode evaluation, which would
+      // cause effective_mode_() to return COOL even though the user selected HEAT.
+      thermostat_direction_ = THERMO_OFF;
+    }
     pending_mode_ = *call.get_mode();
   }
   if (call.get_fan_mode().has_value()) {
