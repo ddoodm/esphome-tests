@@ -1,0 +1,493 @@
+# Landscape climate UI — horizontal gradient slider (top 4/5) + icon bar (bottom 1/5).
+# Screen: 600×450. Slider area: 600×360. Bottom bar: 600×90.
+# Requires: display id my_display, touchscreen (any platform).
+#
+# Slider range: 16–30 °C.  Initial: 22 °C → px = (22-16)/14 * 600 ≈ 257.
+# Left of handle  = lighter amber fill (foreground).
+# Right of handle = darker amber background.
+# Temperature label appears on the *bigger* side:
+#   value < 23 → right side bigger → right label visible (light text on dark bg)
+#   value ≥ 23 → left  side bigger → left  label visible (dark text on light bg)
+
+globals:
+  - id: g_setpoint
+    type: int
+    initial_value: '22'
+
+font:
+  - file: "gfonts://Roboto"
+    id: roboto_96
+    size: 96
+    glyphs: "0123456789"
+  - file: "gfonts://Roboto"
+    id: roboto_32
+    size: 32
+    glyphs: "°C"
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: mdi_44
+    size: 44
+    bpp: 4
+    glyphs:
+      - "\U000F0425"  # mdi:power       (off)
+      - "\U000F0717"  # mdi:snowflake   (cool)
+      - "\U000F0238"  # mdi:fire        (heat)
+      - "\U000F0453"  # mdi:autorenew   (auto / fan-auto)
+      - "\U000F0210"  # mdi:fan         (fan button)
+      - "\U000F0BAF"  # mdi:fan-speed-1 (low)
+      - "\U000F0BB0"  # mdi:fan-speed-2 (med)
+      - "\U000F0BB1"  # mdi:fan-speed-3 (high)
+
+lvgl:
+  displays:
+    - my_display
+  pages:
+    - id: main_page
+      bg_color: 0x1A0D00
+      widgets:
+
+        # ── Slider area (top 360 px) ─────────────────────────────────────────
+        - obj:
+            id: slider_area
+            x: 0
+            y: 0
+            width: 600
+            height: 360
+            bg_opa: transp
+            border_width: 0
+            pad_all: 0
+            widgets:
+
+              # Layer 1 — dark amber background (right / unset region)
+              - obj:
+                  x: 0
+                  y: 0
+                  width: 600
+                  height: 360
+                  radius: 0
+                  border_width: 0
+                  pad_all: 0
+                  bg_color: 0x1A0D00
+                  bg_grad_color: 0x4A2800
+                  bg_grad_dir: HOR
+
+              # Layer 2 — lighter amber foreground (left / set region).
+              # Width is updated by the slider's on_value handler.
+              - obj:
+                  id: slider_fg
+                  x: 0
+                  y: 0
+                  width: 257
+                  height: 360
+                  radius: 0
+                  border_width: 0
+                  pad_all: 0
+                  bg_color: 0x7A3500
+                  bg_grad_color: 0xFF8C00
+                  bg_grad_dir: HOR
+
+              # Layer 3 — drag handle: slim white rounded pill.
+              # x is updated by on_value.  Initial: 257 - 4 = 253.
+              - obj:
+                  id: slider_handle
+                  x: 253
+                  y: 120
+                  width: 8
+                  height: 120
+                  radius: 4
+                  border_width: 0
+                  pad_all: 0
+                  bg_color: 0xFFFFFF
+                  opa: 85%
+
+              # Temperature label — right side (value < 23, dark bg, light text)
+              - obj:
+                  id: temp_right_container
+                  align: RIGHT_MID
+                  x: -24
+                  height: 96
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  layout:
+                    type: FLEX
+                    flex_flow: ROW
+                    flex_align_cross: END
+                  widgets:
+                    - label:
+                        id: temp_right_val
+                        text: "22"
+                        text_color: 0xFFD080
+                        text_font: roboto_96
+                    - label:
+                        text: "°C"
+                        text_color: 0xFFD080
+                        text_font: roboto_32
+                        pad_bottom: 14
+
+              # Temperature label — left side (value ≥ 23, light amber bg, dark text)
+              - obj:
+                  id: temp_left_container
+                  hidden: true
+                  align: LEFT_MID
+                  x: 24
+                  height: 96
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  layout:
+                    type: FLEX
+                    flex_flow: ROW
+                    flex_align_cross: END
+                  widgets:
+                    - label:
+                        id: temp_left_val
+                        text: "22"
+                        text_color: 0x1A0D00
+                        text_font: roboto_96
+                    - label:
+                        text: "°C"
+                        text_color: 0x1A0D00
+                        text_font: roboto_32
+                        pad_bottom: 14
+
+              # Invisible slider — covers the full area, handles all touch / drag.
+              # Drawn last so it sits on top of all visual layers.
+              - slider:
+                  id: temp_slider
+                  x: 0
+                  y: 0
+                  width: 600
+                  height: 360
+                  min_value: 16
+                  max_value: 30
+                  value: 22
+                  pad_all: 0
+                  border_width: 0
+                  radius: 0
+                  bg_opa: transp
+                  indicator:
+                    bg_opa: transp
+                  knob:
+                    bg_opa: transp
+                    border_opa: transp
+                  on_value:
+                    then:
+                      - globals.set:
+                          id: g_setpoint
+                          value: !lambda return (int)x;
+                      # Update foreground width and handle position
+                      - lambda: |-
+                          int px = (int)((x - 16.0f) / 14.0f * 600.0f);
+                          if (px < 0) px = 0;
+                          if (px > 600) px = 600;
+                          lv_obj_set_width(id(slider_fg), px);
+                          lv_obj_set_x(id(slider_handle), px - 4);
+                      # Sync both label values
+                      - lvgl.label.update:
+                          id: temp_right_val
+                          text: !lambda |-
+                            char buf[4];
+                            snprintf(buf, sizeof(buf), "%d", (int)x);
+                            return std::string(buf);
+                      - lvgl.label.update:
+                          id: temp_left_val
+                          text: !lambda |-
+                            char buf[4];
+                            snprintf(buf, sizeof(buf), "%d", (int)x);
+                            return std::string(buf);
+                      # Show label on the bigger (emptier) side
+                      - if:
+                          condition:
+                            lambda: return x < 23;
+                          then:
+                            - lvgl.widget.show: temp_right_container
+                            - lvgl.widget.hide: temp_left_container
+                          else:
+                            - lvgl.widget.show: temp_left_container
+                            - lvgl.widget.hide: temp_right_container
+
+        # ── Bottom bar (y = 360, height = 90 px) ─────────────────────────────
+        - obj:
+            id: bottom_bar
+            x: 0
+            y: 360
+            width: 600
+            height: 90
+            radius: 0
+            border_width: 0
+            pad_all: 0
+            bg_color: 0x0F0700
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_EVENLY
+              flex_align_cross: CENTER
+
+            widgets:
+
+              # Mode: Off
+              - button:
+                  id: btn_off
+                  width: 80
+                  height: 70
+                  radius: 8
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.label.update:
+                          id: icon_off
+                          text_color: 0xFF8C00
+                      - lvgl.label.update:
+                          id: icon_cool
+                          text_color: 0x554433
+                      - lvgl.label.update:
+                          id: icon_heat
+                          text_color: 0x554433
+                      - lvgl.label.update:
+                          id: icon_auto
+                          text_color: 0x554433
+                  widgets:
+                    - label:
+                        id: icon_off
+                        align: CENTER
+                        text: "\U000F0425"
+                        text_font: mdi_44
+                        text_color: 0x554433
+
+              # Mode: Cool
+              - button:
+                  id: btn_cool
+                  width: 80
+                  height: 70
+                  radius: 8
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.label.update:
+                          id: icon_off
+                          text_color: 0x554433
+                      - lvgl.label.update:
+                          id: icon_cool
+                          text_color: 0xFF8C00
+                      - lvgl.label.update:
+                          id: icon_heat
+                          text_color: 0x554433
+                      - lvgl.label.update:
+                          id: icon_auto
+                          text_color: 0x554433
+                  widgets:
+                    - label:
+                        id: icon_cool
+                        align: CENTER
+                        text: "\U000F0717"
+                        text_font: mdi_44
+                        text_color: 0x554433
+
+              # Mode: Heat (initially selected)
+              - button:
+                  id: btn_heat
+                  width: 80
+                  height: 70
+                  radius: 8
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.label.update:
+                          id: icon_off
+                          text_color: 0x554433
+                      - lvgl.label.update:
+                          id: icon_cool
+                          text_color: 0x554433
+                      - lvgl.label.update:
+                          id: icon_heat
+                          text_color: 0xFF8C00
+                      - lvgl.label.update:
+                          id: icon_auto
+                          text_color: 0x554433
+                  widgets:
+                    - label:
+                        id: icon_heat
+                        align: CENTER
+                        text: "\U000F0238"
+                        text_font: mdi_44
+                        text_color: 0xFF8C00
+
+              # Mode: Auto
+              - button:
+                  id: btn_auto
+                  width: 80
+                  height: 70
+                  radius: 8
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.label.update:
+                          id: icon_off
+                          text_color: 0x554433
+                      - lvgl.label.update:
+                          id: icon_cool
+                          text_color: 0x554433
+                      - lvgl.label.update:
+                          id: icon_heat
+                          text_color: 0x554433
+                      - lvgl.label.update:
+                          id: icon_auto
+                          text_color: 0xFF8C00
+                  widgets:
+                    - label:
+                        id: icon_auto
+                        align: CENTER
+                        text: "\U000F0453"
+                        text_font: mdi_44
+                        text_color: 0x554433
+
+              # Vertical separator between mode buttons and fan button
+              - obj:
+                  width: 2
+                  height: 50
+                  bg_color: 0x3D2000
+                  border_width: 0
+                  pad_all: 0
+
+              # Fan speed toggle — tapping opens/closes the drop-up panel
+              - button:
+                  id: btn_fan
+                  width: 80
+                  height: 70
+                  radius: 8
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - if:
+                          condition:
+                            lambda: return lv_obj_has_flag(id(fan_panel), LV_OBJ_FLAG_HIDDEN);
+                          then:
+                            - lvgl.widget.show: fan_panel
+                          else:
+                            - lvgl.widget.hide: fan_panel
+                  widgets:
+                    - label:
+                        id: icon_fan
+                        align: CENTER
+                        text: "\U000F0210"
+                        text_font: mdi_44
+                        text_color: 0x886655
+
+        # ── Fan drop-up panel (y = 280, height = 80) ─────────────────────────
+        # Floats above the bottom bar when the fan button is tapped.
+        - obj:
+            id: fan_panel
+            hidden: true
+            x: 0
+            y: 280
+            width: 600
+            height: 80
+            radius: 0
+            border_width: 0
+            pad_all: 0
+            bg_color: 0x1F1000
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_EVENLY
+              flex_align_cross: CENTER
+
+            widgets:
+
+              # Fan: Low
+              - button:
+                  id: btn_fan_low
+                  width: 110
+                  height: 64
+                  radius: 8
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.widget.hide: fan_panel
+                      - lvgl.label.update:
+                          id: icon_fan
+                          text: "\U000F0BAF"
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0BAF"
+                        text_font: mdi_44
+                        text_color: 0xCC8844
+
+              # Fan: Medium
+              - button:
+                  id: btn_fan_med
+                  width: 110
+                  height: 64
+                  radius: 8
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.widget.hide: fan_panel
+                      - lvgl.label.update:
+                          id: icon_fan
+                          text: "\U000F0BB0"
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0BB0"
+                        text_font: mdi_44
+                        text_color: 0xCC8844
+
+              # Fan: High
+              - button:
+                  id: btn_fan_high
+                  width: 110
+                  height: 64
+                  radius: 8
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.widget.hide: fan_panel
+                      - lvgl.label.update:
+                          id: icon_fan
+                          text: "\U000F0BB1"
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0BB1"
+                        text_font: mdi_44
+                        text_color: 0xCC8844
+
+              # Fan: Auto
+              - button:
+                  id: btn_fan_auto
+                  width: 110
+                  height: 64
+                  radius: 8
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.widget.hide: fan_panel
+                      - lvgl.label.update:
+                          id: icon_fan
+                          text: "\U000F0453"
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0453"
+                        text_font: mdi_44
+                        text_color: 0xCC8844
