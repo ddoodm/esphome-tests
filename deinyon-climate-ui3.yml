@@ -1,11 +1,19 @@
 # deinyon-climate-ui3.yml
-# V3 — Portrait arc, dark peppermint theme, 450×600
+# V3 — Portrait arc, dark theme, 450×600
 # Requires: display id my_display, touchscreen (any platform)
 # Device must be in portrait orientation (no rotation: 270°)
 #
-# Arc value mapping: arc_val = (temp_c - 16) / 14.0 * 100
-#   16 °C → 0    22 °C → 43    30 °C → 100
-# Initial state: setpoint 22 °C (arc 43), current 19 °C (arc 21)
+# Arc value mapping: arc_val = (temp_c - g_temp_min) / (g_temp_max - g_temp_min) * 100
+#   default range 19–29 °C (actron_b812 visual limits), step 0.5 °C
+#   19 °C → 0    22 °C → 30    29 °C → 100
+# Initial state: setpoint 22 °C (arc 30), room 21 °C (arc 20)
+#
+# g_mode: 0=off  1=cool  2=heat  3=auto  4=fan-only
+# g_prev_mode: last non-off mode, restored on power-on (default 1=cool)
+#
+# To wire real climate min/max on boot, replace g_temp_min/max initial_values
+# with: id(g_temp_min) = id(my_climate).get_traits().get_min_target_temperature();
+#        id(g_temp_max) = id(my_climate).get_traits().get_max_target_temperature();
 
 esphome:
   on_boot:
@@ -25,33 +33,51 @@ esphome:
           lv_style_init(&_s_default);
           lv_style_set_transition(&_s_default, &_t_out);
           // btn_fan_auto and btn_power are excluded — their border colour is
-          // managed manually for toggle state, so the transition would conflict.
+          // managed by apply_mode_style / fan-auto toggle, so the transition would conflict.
           lv_obj_t *_btns[] = {id(btn_fan), id(btn_mode),
                                 id(btn_temp_minus), id(btn_temp_plus)};
           for (int i = 0; i < 4; i++) {
             lv_obj_add_style(_btns[i], &_s_default, LV_STATE_DEFAULT);
             lv_obj_add_style(_btns[i], &_s_pressed, LV_STATE_PRESSED);
           }
+      - script.execute: apply_mode_style
 
 globals:
   - id: g_setpoint
-    type: int
-    initial_value: '22'
+    type: float
+    initial_value: '22.0'
   - id: g_setpoint_arc
     type: int
-    initial_value: '43'
+    initial_value: '30'
+  - id: g_temp_min
+    type: float
+    initial_value: '19.0'
+  - id: g_temp_max
+    type: float
+    initial_value: '29.0'
+  - id: g_current_arc
+    type: int
+    initial_value: '20'
+  - id: g_mode
+    type: int
+    initial_value: '0'
+  - id: g_prev_mode
+    type: int
+    initial_value: '1'
   - id: g_fan_auto
     type: bool
     initial_value: 'false'
-  - id: g_power_on
-    type: bool
-    initial_value: 'false'
+  # Current accent hex — written by apply_mode_style so any lambda can read it
+  # without repeating the mode switch. Grey (off) until first mode is set.
+  - id: g_accent_hex
+    type: uint32_t
+    initial_value: '0x444444'
 
 font:
   - file: "gfonts://Roboto"
     id: roboto_96
     size: 96
-    glyphs: "0123456789"
+    glyphs: "0123456789."
   - file: "gfonts://Roboto"
     id: roboto_32
     size: 32
@@ -64,13 +90,95 @@ font:
       - "\U000F0425"  # mdi:power
       - "\U000F0717"  # mdi:snowflake   (cool mode)
       - "\U000F0238"  # mdi:fire        (heat mode)
-      - "\U000F0453"  # mdi:autorenew   (auto mode / fan auto)
-      - "\U000F0210"  # mdi:fan         (fan speed button)
+      - "\U000F0453"  # mdi:autorenew   (auto mode / fan auto toggle)
+      - "\U000F0210"  # mdi:fan         (fan speed button / fan-only mode)
       - "\U000F0BAF"  # mdi:fan-speed-1 (low)
       - "\U000F0BB0"  # mdi:fan-speed-2 (med)
       - "\U000F0BB1"  # mdi:fan-speed-3 (high)
       - "\U000F0374"  # mdi:minus       (temp −)
       - "\U000F0417"  # mdi:plus        (temp +)
+
+# ── Mode colour script ─────────────────────────────────────────────────────────
+# Single source of truth for arc colours, power button, and fan-auto toggle.
+# Writes g_accent_hex so the fan-auto toggle lambda can read the current accent
+# without duplicating the switch.
+# Call whenever g_mode changes: mode button taps, power toggle, boot.
+script:
+  - id: apply_mode_style
+    then:
+      - lambda: |-
+          lv_color_t track_col, accent_col;
+          uint32_t   accent_num;
+          bool powered = (id(g_mode) != 0);
+          switch (id(g_mode)) {
+            case 1: // cool — blue
+              track_col  = lv_color_hex(0x003E7A);
+              accent_col = lv_color_hex(0x33AAFF);
+              accent_num = 0x33AAFF;
+              break;
+            case 2: // heat — orange-red
+              track_col  = lv_color_hex(0x7A2500);
+              accent_col = lv_color_hex(0xFF6622);
+              accent_num = 0xFF6622;
+              break;
+            case 3: // auto — peppermint
+              track_col  = lv_color_hex(0x006B50);
+              accent_col = lv_color_hex(0x00D9A3);
+              accent_num = 0x00D9A3;
+              break;
+            case 4: // fan-only — silver
+              track_col  = lv_color_hex(0x333333);
+              accent_col = lv_color_hex(0x888888);
+              accent_num = 0x888888;
+              break;
+            default: // off
+              track_col  = lv_color_hex(0x1A1A1A);
+              accent_col = lv_color_hex(0x444444);
+              accent_num = 0x444444;
+              break;
+          }
+          // Publish accent for other lambdas to consume
+          id(g_accent_hex) = powered ? accent_num : 0x444444U;
+          lv_color_t active_col = lv_color_hex(id(g_accent_hex));
+
+          // ── Arc ────────────────────────────────────────────────────────────
+          lv_obj_set_style_arc_opa(id(arc_track),
+                                   powered ? LV_OPA_COVER : LV_OPA_TRANSP,
+                                   LV_PART_INDICATOR);
+          if (powered)
+            lv_obj_set_style_arc_color(id(arc_track), track_col, LV_PART_INDICATOR);
+          lv_obj_set_style_arc_color(id(arc_diff), active_col, LV_PART_INDICATOR);
+          if (!powered) {
+            lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+          } else if (id(g_setpoint_arc) > id(g_current_arc)) {
+            lv_arc_set_bg_start_angle(id(arc_diff),
+              (int)(135.0f + id(g_current_arc) / 100.0f * 270.0f));
+            lv_arc_set_bg_end_angle(id(arc_diff),
+              (int)(135.0f + id(g_setpoint_arc) / 100.0f * 270.0f));
+            lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+          }
+          lv_obj_set_style_border_color(id(arc_setpoint), active_col, LV_PART_KNOB);
+
+          // ── Power button ───────────────────────────────────────────────────
+          lv_obj_set_style_border_color(id(btn_power),
+                                        powered ? active_col : lv_color_hex(0x2E2E2E),
+                                        LV_STATE_DEFAULT);
+          lv_obj_set_style_text_color(id(icon_power),
+                                      powered ? active_col : lv_color_hex(0x777777),
+                                      LV_STATE_DEFAULT);
+
+          // ── Fan auto toggle ────────────────────────────────────────────────
+          if (id(g_fan_auto)) {
+            lv_obj_set_style_border_color(id(btn_fan_auto), active_col, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(id(icon_fan_auto), active_col, LV_STATE_DEFAULT);
+          }
+
+          // ── Fan speed popup icons ──────────────────────────────────────────
+          // Use a slightly lighter grey when off so icons remain legible.
+          lv_color_t popup_col = powered ? active_col : lv_color_hex(0x666666);
+          lv_obj_set_style_text_color(id(icon_fan_pop_low),  popup_col, LV_STATE_DEFAULT);
+          lv_obj_set_style_text_color(id(icon_fan_pop_med),  popup_col, LV_STATE_DEFAULT);
+          lv_obj_set_style_text_color(id(icon_fan_pop_high), popup_col, LV_STATE_DEFAULT);
 
 lvgl:
   displays:
@@ -81,7 +189,7 @@ lvgl:
       widgets:
 
         # ── Top button row ─────────────────────────────────────────────────────
-        # Fan speed button (top-left, x=15)
+        # Fan speed button (top-left, x=15) — icon shows selected speed; always neutral (no active state)
         - button:
             id: btn_fan
             x: 15
@@ -113,7 +221,7 @@ lvgl:
                   text_font: mdi_36
                   text_color: 0x777777
 
-        # Fan auto toggle (x=141) — highlights peppermint when active
+        # Fan auto toggle (x=141) — highlights in current mode accent when active
         - button:
             id: btn_fan_auto
             x: 141
@@ -130,11 +238,12 @@ lvgl:
                 - lambda: |-
                     id(g_fan_auto) = !id(g_fan_auto);
                     if (id(g_fan_auto)) {
-                      lv_obj_set_style_border_color(id(btn_fan_auto), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
-                      lv_obj_set_style_text_color(id(icon_fan_auto), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                      lv_color_t col = lv_color_hex(id(g_accent_hex));
+                      lv_obj_set_style_border_color(id(btn_fan_auto), col, LV_STATE_DEFAULT);
+                      lv_obj_set_style_text_color(id(icon_fan_auto),  col, LV_STATE_DEFAULT);
                     } else {
                       lv_obj_set_style_border_color(id(btn_fan_auto), lv_color_hex(0x2E2E2E), LV_STATE_DEFAULT);
-                      lv_obj_set_style_text_color(id(icon_fan_auto), lv_color_hex(0x777777), LV_STATE_DEFAULT);
+                      lv_obj_set_style_text_color(id(icon_fan_auto),  lv_color_hex(0x777777), LV_STATE_DEFAULT);
                     }
             widgets:
               - label:
@@ -144,7 +253,7 @@ lvgl:
                   text_font: mdi_36
                   text_color: 0x777777
 
-        # Mode button (top-right, x=321) — icon updates to selected mode
+        # Mode button (top-right, x=321) — icon glyph updates to selected mode; always neutral (no active state)
         - button:
             id: btn_mode
             x: 321
@@ -176,8 +285,8 @@ lvgl:
                   text_font: mdi_36
                   text_color: 0x777777
 
-        # ── Arc area: 300×300, centered horizontally at y=150 ─────────────────
-        # All 3 arcs share the same container and geometry (100% × 100%).
+        # ── Arc area: 330×330, centered horizontally at y=155 ─────────────────
+        # All arcs share the same container and geometry (100% × 100%).
         - obj:
             align: TOP_MID
             y: 155
@@ -189,14 +298,14 @@ lvgl:
             scrollable: false
             widgets:
 
-              # Arc 1 — dark-gray track + peppermint setpoint fill
-              # indicator fills from 0° to the setpoint arc value
+              # Arc 1 — dark-gray background ring + mode-coloured setpoint indicator.
+              # Indicator opa starts at 0% (off state); apply_mode_style reveals it on power-on.
               - arc:
                   id: arc_track
                   adjustable: false
                   min_value: 0
                   max_value: 100
-                  value: 43
+                  value: 30
                   width: 100%
                   height: 100%
                   arc_color: 0x1A1A1A
@@ -204,33 +313,33 @@ lvgl:
                   indicator:
                     arc_color: 0x006B50
                     arc_width: 32
+                    arc_opa: 0%
                   knob:
                     bg_opa: transp
                     border_opa: transp
 
-              # Arc 2 — bright peppermint diff segment (current → setpoint gap)
-              # Trick: arc_width=0 hides the BG ring; only indicator shows.
-              # start_angle/end_angle constrain the window; value=100 fills it.
+              # Arc 2 — bright accent diff segment (current temp → setpoint gap).
+              # Starts hidden; apply_mode_style / on_value show it when powered and setpoint > current.
               - arc:
                   id: arc_diff
                   adjustable: false
-                  hidden: false
+                  hidden: true
                   min_value: 0
                   max_value: 100
                   value: 100
-                  start_angle: 192
-                  end_angle: 251
+                  start_angle: 189
+                  end_angle: 216
                   width: 100%
                   height: 100%
                   arc_width: 0
                   indicator:
-                    arc_color: 0x00D9A3
+                    arc_color: 0x444444
                     arc_width: 32
                   knob:
                     bg_opa: transp
                     border_opa: transp
 
-              # Arc 3 — current temperature dot marker (not interactive)
+              # Arc 3 — current temperature dot marker (not interactive).
               # adjustable: true required for LVGL to keep knob styled.
               # LV_OBJ_FLAG_CLICKABLE cleared on boot so it won't capture touch.
               - arc:
@@ -238,7 +347,7 @@ lvgl:
                   adjustable: true
                   min_value: 0
                   max_value: 100
-                  value: 21
+                  value: 20
                   width: 100%
                   height: 100%
                   arc_width: 0
@@ -252,9 +361,12 @@ lvgl:
                     pad_all: -8
 
               # Temperature label — centered inside the arc.
+              # Fixed size so the container never clips wider text (e.g. "24.0").
               # clickable: false so touches pass through to arc_setpoint below.
               - obj:
                   align: CENTER
+                  width: 300
+                  height: 120
                   bg_opa: transp
                   border_width: 0
                   pad_all: 0
@@ -268,7 +380,7 @@ lvgl:
                   widgets:
                     - label:
                         id: temp_label
-                        text: "22"
+                        text: "22.0"
                         text_color: 0xF5F5F5
                         text_font: roboto_96
                     - label:
@@ -277,14 +389,15 @@ lvgl:
                         text_font: roboto_32
                         pad_bottom: 16
 
-              # Arc 4 — draggable setpoint knob (drawn last = topmost, absorbs all touch)
-              # Transparent arc + invisible indicator; only the white knob is rendered.
+              # Arc 4 — draggable setpoint knob (drawn last = topmost, absorbs all touch).
+              # Transparent arc + invisible indicator; only the styled knob is rendered.
+              # Knob border starts grey (off); apply_mode_style colours it on power-on.
               - arc:
                   id: arc_setpoint
                   adjustable: true
                   min_value: 0
                   max_value: 100
-                  value: 43
+                  value: 30
                   width: 100%
                   height: 100%
                   arc_width: 0
@@ -293,7 +406,7 @@ lvgl:
                     arc_opa: 0%
                   knob:
                     bg_color: 0xFFFFFF
-                    border_color: 0x00D9A3
+                    border_color: 0x444444
                     border_width: 6
                     pad_all: -2
                   on_value:
@@ -301,18 +414,23 @@ lvgl:
                       - lambda: |-
                           int arc_val = (int)x;
                           id(g_setpoint_arc) = arc_val;
-                          id(g_setpoint) = (int)roundf(arc_val / 100.0f * 14.0f + 16.0f);
+                          // Convert arc → temperature, snapped to nearest 0.5 °C
+                          float raw = arc_val / 100.0f * (id(g_temp_max) - id(g_temp_min)) + id(g_temp_min);
+                          id(g_setpoint) = roundf(raw * 2.0f) / 2.0f;
                           // Direct set — no animation during drag
                           lv_arc_set_value(id(arc_track), arc_val);
-                          if (arc_val > 21) {
+                          // Diff segment: only when powered and setpoint above current
+                          if (id(g_mode) != 0 && arc_val > id(g_current_arc)) {
                             lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
-                            lv_arc_set_bg_start_angle(id(arc_diff), (int)(135.0f + 21.0f / 100.0f * 270.0f));
-                            lv_arc_set_bg_end_angle(id(arc_diff), (int)(135.0f + (float)arc_val / 100.0f * 270.0f));
+                            lv_arc_set_bg_start_angle(id(arc_diff),
+                              (int)(135.0f + id(g_current_arc) / 100.0f * 270.0f));
+                            lv_arc_set_bg_end_angle(id(arc_diff),
+                              (int)(135.0f + (float)arc_val / 100.0f * 270.0f));
                           } else {
                             lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
                           }
-                          char buf[4];
-                          snprintf(buf, sizeof(buf), "%d", id(g_setpoint));
+                          char buf[8];
+                          snprintf(buf, sizeof(buf), "%.1f", id(g_setpoint));
                           lv_label_set_text(id(temp_label), buf);
 
         # ── Bottom button row ──────────────────────────────────────────────────
@@ -332,15 +450,17 @@ lvgl:
               then:
                 - lambda: |-
                     // Snapshot current visual arc position before updating globals —
-                    // this is the correct animation start even mid-animation on rapid taps
+                    // correct animation start even mid-animation on rapid taps
                     int32_t vis = lv_arc_get_value(id(arc_track));
-                    if (id(g_setpoint) > 16) {
-                      id(g_setpoint) -= 1;
-                      id(g_setpoint_arc) = (int)((id(g_setpoint) - 16.0f) / 14.0f * 100.0f);
+                    if (id(g_setpoint) > id(g_temp_min)) {
+                      id(g_setpoint) -= 0.5f;
+                      if (id(g_setpoint) < id(g_temp_min)) id(g_setpoint) = id(g_temp_min);
+                      id(g_setpoint_arc) = (int)((id(g_setpoint) - id(g_temp_min))
+                                            / (id(g_temp_max) - id(g_temp_min)) * 100.0f);
                     }
                     int32_t tgt = id(g_setpoint_arc);
                     // Animate arc_track and arc_setpoint knob together
-                    lv_anim_del(id(arc_track),   (lv_anim_exec_xcb_t)lv_arc_set_value);
+                    lv_anim_del(id(arc_track),    (lv_anim_exec_xcb_t)lv_arc_set_value);
                     lv_anim_del(id(arc_setpoint), (lv_anim_exec_xcb_t)lv_arc_set_value);
                     {
                       lv_anim_t a;
@@ -354,13 +474,15 @@ lvgl:
                       lv_anim_set_var(&a, id(arc_setpoint));
                       lv_anim_start(&a);
                     }
-                    // Animate arc_diff end angle in sync (start from visual position)
-                    if (tgt > 21) {
+                    // Animate arc_diff end angle in sync (only when powered)
+                    int32_t cur = id(g_current_arc);
+                    if (id(g_mode) != 0 && tgt > cur) {
                       lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
-                      int32_t ang_from = (vis > 21) ? (int)(135.0f + vis / 100.0f * 270.0f)
-                                                    : (int)(135.0f + 21.0f / 100.0f * 270.0f);
+                      int32_t ang_from = (vis > cur) ? (int)(135.0f + vis / 100.0f * 270.0f)
+                                                     : (int)(135.0f + cur / 100.0f * 270.0f);
                       int32_t ang_to   = (int)(135.0f + tgt / 100.0f * 270.0f);
-                      lv_arc_set_bg_start_angle(id(arc_diff), (int)(135.0f + 21.0f / 100.0f * 270.0f));
+                      lv_arc_set_bg_start_angle(id(arc_diff),
+                        (int)(135.0f + cur / 100.0f * 270.0f));
                       lv_anim_del(id(arc_diff), (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
                       {
                         lv_anim_t a;
@@ -375,8 +497,8 @@ lvgl:
                     } else {
                       lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
                     }
-                    char buf[4];
-                    snprintf(buf, sizeof(buf), "%d", id(g_setpoint));
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "%.1f", id(g_setpoint));
                     lv_label_set_text(id(temp_label), buf);
             widgets:
               - label:
@@ -385,7 +507,7 @@ lvgl:
                   text_font: mdi_36
                   text_color: 0x777777
 
-        # Power button (bottom-center, x=168) — toggles AC on/off
+        # Power button (bottom-center, x=168) — toggles between off and last mode
         - button:
             id: btn_power
             x: 168
@@ -400,14 +522,13 @@ lvgl:
             on_click:
               then:
                 - lambda: |-
-                    id(g_power_on) = !id(g_power_on);
-                    if (id(g_power_on)) {
-                      lv_obj_set_style_border_color(id(btn_power), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
-                      lv_obj_set_style_text_color(id(icon_power), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                    if (id(g_mode) == 0) {
+                      id(g_mode) = id(g_prev_mode);
                     } else {
-                      lv_obj_set_style_border_color(id(btn_power), lv_color_hex(0x2E2E2E), LV_STATE_DEFAULT);
-                      lv_obj_set_style_text_color(id(icon_power), lv_color_hex(0x777777), LV_STATE_DEFAULT);
+                      id(g_prev_mode) = id(g_mode);
+                      id(g_mode) = 0;
                     }
+                - script.execute: apply_mode_style
             widgets:
               - label:
                   id: icon_power
@@ -432,15 +553,17 @@ lvgl:
               then:
                 - lambda: |-
                     // Snapshot current visual arc position before updating globals —
-                    // this is the correct animation start even mid-animation on rapid taps
+                    // correct animation start even mid-animation on rapid taps
                     int32_t vis = lv_arc_get_value(id(arc_track));
-                    if (id(g_setpoint) < 30) {
-                      id(g_setpoint) += 1;
-                      id(g_setpoint_arc) = (int)((id(g_setpoint) - 16.0f) / 14.0f * 100.0f);
+                    if (id(g_setpoint) < id(g_temp_max)) {
+                      id(g_setpoint) += 0.5f;
+                      if (id(g_setpoint) > id(g_temp_max)) id(g_setpoint) = id(g_temp_max);
+                      id(g_setpoint_arc) = (int)((id(g_setpoint) - id(g_temp_min))
+                                            / (id(g_temp_max) - id(g_temp_min)) * 100.0f);
                     }
                     int32_t tgt = id(g_setpoint_arc);
                     // Animate arc_track and arc_setpoint knob together
-                    lv_anim_del(id(arc_track),   (lv_anim_exec_xcb_t)lv_arc_set_value);
+                    lv_anim_del(id(arc_track),    (lv_anim_exec_xcb_t)lv_arc_set_value);
                     lv_anim_del(id(arc_setpoint), (lv_anim_exec_xcb_t)lv_arc_set_value);
                     {
                       lv_anim_t a;
@@ -454,13 +577,15 @@ lvgl:
                       lv_anim_set_var(&a, id(arc_setpoint));
                       lv_anim_start(&a);
                     }
-                    // Animate arc_diff end angle in sync (start from visual position)
-                    if (tgt > 21) {
+                    // Animate arc_diff end angle in sync (only when powered)
+                    int32_t cur = id(g_current_arc);
+                    if (id(g_mode) != 0 && tgt > cur) {
                       lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
-                      int32_t ang_from = (vis > 21) ? (int)(135.0f + vis / 100.0f * 270.0f)
-                                                    : (int)(135.0f + 21.0f / 100.0f * 270.0f);
+                      int32_t ang_from = (vis > cur) ? (int)(135.0f + vis / 100.0f * 270.0f)
+                                                     : (int)(135.0f + cur / 100.0f * 270.0f);
                       int32_t ang_to   = (int)(135.0f + tgt / 100.0f * 270.0f);
-                      lv_arc_set_bg_start_angle(id(arc_diff), (int)(135.0f + 21.0f / 100.0f * 270.0f));
+                      lv_arc_set_bg_start_angle(id(arc_diff),
+                        (int)(135.0f + cur / 100.0f * 270.0f));
                       lv_anim_del(id(arc_diff), (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
                       {
                         lv_anim_t a;
@@ -475,8 +600,8 @@ lvgl:
                     } else {
                       lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
                     }
-                    char buf[4];
-                    snprintf(buf, sizeof(buf), "%d", id(g_setpoint));
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "%.1f", id(g_setpoint));
                     lv_label_set_text(id(temp_label), buf);
             widgets:
               - label:
@@ -488,8 +613,6 @@ lvgl:
         # ── Popup backdrop ─────────────────────────────────────────────────────
         # Transparent full-screen layer sitting above the main UI but below both
         # popup panels. When a popup is open this catches any tap outside it.
-        # z-order: listed here (after bottom buttons, before popups) ensures
-        # popups render on top of it.
         - obj:
             id: popup_backdrop
             hidden: true
@@ -537,15 +660,14 @@ lvgl:
                       - lambda: |-
                           lv_obj_add_flag(id(popup_backdrop), LV_OBJ_FLAG_HIDDEN);
                           lv_label_set_text(id(icon_fan), "\U000F0BAF");
-                          lv_obj_set_style_text_color(id(icon_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
-                          lv_obj_set_style_border_color(id(btn_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
                   widgets:
                     - label:
+                        id: icon_fan_pop_low
                         align: LEFT_MID
                         x: 18
                         text: "\U000F0BAF"
                         text_font: mdi_36
-                        text_color: 0x00D9A3
+                        text_color: 0x666666
                     - label:
                         align: LEFT_MID
                         x: 70
@@ -576,15 +698,14 @@ lvgl:
                       - lambda: |-
                           lv_obj_add_flag(id(popup_backdrop), LV_OBJ_FLAG_HIDDEN);
                           lv_label_set_text(id(icon_fan), "\U000F0BB0");
-                          lv_obj_set_style_text_color(id(icon_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
-                          lv_obj_set_style_border_color(id(btn_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
                   widgets:
                     - label:
+                        id: icon_fan_pop_med
                         align: LEFT_MID
                         x: 18
                         text: "\U000F0BB0"
                         text_font: mdi_36
-                        text_color: 0x00D9A3
+                        text_color: 0x666666
                     - label:
                         align: LEFT_MID
                         x: 70
@@ -615,15 +736,14 @@ lvgl:
                       - lambda: |-
                           lv_obj_add_flag(id(popup_backdrop), LV_OBJ_FLAG_HIDDEN);
                           lv_label_set_text(id(icon_fan), "\U000F0BB1");
-                          lv_obj_set_style_text_color(id(icon_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
-                          lv_obj_set_style_border_color(id(btn_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
                   widgets:
                     - label:
+                        id: icon_fan_pop_high
                         align: LEFT_MID
                         x: 18
                         text: "\U000F0BB1"
                         text_font: mdi_36
-                        text_color: 0x00D9A3
+                        text_color: 0x666666
                     - label:
                         align: LEFT_MID
                         x: 70
@@ -631,14 +751,17 @@ lvgl:
                         text_font: montserrat_18
                         text_color: 0xDDDDDD
 
-        # ── Mode popup — list style (icon left, label right) ───────────────────
+        # ── Mode popup — 4 options: Cool / Heat / Auto / Fan Only ──────────────
+        # Each button: sets g_mode + g_prev_mode, updates icon glyph, calls apply_mode_style.
+        # Colour of btn_mode border and icon_mode are handled by the script.
+        # Popup icon colours match their respective mode accents for quick recognition.
         - obj:
             id: mode_popup
             hidden: true
             x: 230
             y: 134
             width: 220
-            height: 270
+            height: 360
             radius: 12
             border_width: 1
             border_color: 0x2E2E2E
@@ -662,15 +785,16 @@ lvgl:
                       - lambda: |-
                           lv_obj_add_flag(id(popup_backdrop), LV_OBJ_FLAG_HIDDEN);
                           lv_label_set_text(id(icon_mode), "\U000F0717");
-                          lv_obj_set_style_text_color(id(icon_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
-                          lv_obj_set_style_border_color(id(btn_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                          id(g_mode) = 1;
+                          id(g_prev_mode) = 1;
+                      - script.execute: apply_mode_style
                   widgets:
                     - label:
                         align: LEFT_MID
                         x: 18
                         text: "\U000F0717"
                         text_font: mdi_36
-                        text_color: 0x00D9A3
+                        text_color: 0x33AAFF
                     - label:
                         align: LEFT_MID
                         x: 70
@@ -701,15 +825,16 @@ lvgl:
                       - lambda: |-
                           lv_obj_add_flag(id(popup_backdrop), LV_OBJ_FLAG_HIDDEN);
                           lv_label_set_text(id(icon_mode), "\U000F0238");
-                          lv_obj_set_style_text_color(id(icon_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
-                          lv_obj_set_style_border_color(id(btn_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                          id(g_mode) = 2;
+                          id(g_prev_mode) = 2;
+                      - script.execute: apply_mode_style
                   widgets:
                     - label:
                         align: LEFT_MID
                         x: 18
                         text: "\U000F0238"
                         text_font: mdi_36
-                        text_color: 0x00D9A3
+                        text_color: 0xFF6622
                     - label:
                         align: LEFT_MID
                         x: 70
@@ -740,8 +865,9 @@ lvgl:
                       - lambda: |-
                           lv_obj_add_flag(id(popup_backdrop), LV_OBJ_FLAG_HIDDEN);
                           lv_label_set_text(id(icon_mode), "\U000F0453");
-                          lv_obj_set_style_text_color(id(icon_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
-                          lv_obj_set_style_border_color(id(btn_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                          id(g_mode) = 3;
+                          id(g_prev_mode) = 3;
+                      - script.execute: apply_mode_style
                   widgets:
                     - label:
                         align: LEFT_MID
@@ -753,5 +879,45 @@ lvgl:
                         align: LEFT_MID
                         x: 70
                         text: "Auto"
+                        text_font: montserrat_18
+                        text_color: 0xDDDDDD
+              - obj:
+                  x: 0
+                  y: 270
+                  width: 220
+                  height: 1
+                  bg_color: 0x2E2E2E
+                  border_width: 0
+                  pad_all: 0
+              - button:
+                  id: btn_fan_only
+                  x: 0
+                  y: 271
+                  width: 220
+                  height: 89
+                  radius: 0
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.widget.hide: mode_popup
+                      - lambda: |-
+                          lv_obj_add_flag(id(popup_backdrop), LV_OBJ_FLAG_HIDDEN);
+                          lv_label_set_text(id(icon_mode), "\U000F0210");
+                          id(g_mode) = 4;
+                          id(g_prev_mode) = 4;
+                      - script.execute: apply_mode_style
+                  widgets:
+                    - label:
+                        align: LEFT_MID
+                        x: 18
+                        text: "\U000F0210"
+                        text_font: mdi_36
+                        text_color: 0x888888
+                    - label:
+                        align: LEFT_MID
+                        x: 70
+                        text: "Fan Only"
                         text_font: montserrat_18
                         text_color: 0xDDDDDD
