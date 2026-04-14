@@ -20,6 +20,11 @@ CONF_AUTO_DEADBAND_TIMEOUT = "auto_deadband_timeout"
 CONF_COMPRESSOR_RUNNING = "compressor_running"
 CONF_STATE_SENSOR = "state"
 CONF_TIMER_REMAINING = "timer_remaining"
+CONF_THERMOSTAT_DIRECTION = "thermostat_direction"
+CONF_DEADBAND_ACTIVE = "deadband_active"
+CONF_DEADBAND_EXPIRES_IN = "deadband_expires_in"
+CONF_REVERSING_VALVE = "reversing_valve"
+CONF_CALL_ACTIVE = "call_active"
 
 CONFIG_SCHEMA = climate.climate_schema(ActronB812Climate).extend({
     cv.Required(CONF_TRANSMITTER_ID): cv.use_id(
@@ -38,6 +43,15 @@ CONFIG_SCHEMA = climate.climate_schema(ActronB812Climate).extend({
         accuracy_decimals=0,
         state_class=STATE_CLASS_MEASUREMENT,
     ),
+    cv.Optional(CONF_THERMOSTAT_DIRECTION): text_sensor.text_sensor_schema(),
+    cv.Optional(CONF_DEADBAND_ACTIVE): binary_sensor.binary_sensor_schema(),
+    cv.Optional(CONF_DEADBAND_EXPIRES_IN): sensor.sensor_schema(
+        unit_of_measurement=UNIT_SECOND,
+        accuracy_decimals=0,
+        state_class=STATE_CLASS_MEASUREMENT,
+    ),
+    cv.Optional(CONF_REVERSING_VALVE): binary_sensor.binary_sensor_schema(),
+    cv.Optional(CONF_CALL_ACTIVE): binary_sensor.binary_sensor_schema(),
 }).extend(cv.polling_component_schema("222ms"))
 
 async def to_code(config):
@@ -68,3 +82,23 @@ async def to_code(config):
     if CONF_TIMER_REMAINING in config:
         s = await sensor.new_sensor(config[CONF_TIMER_REMAINING])
         cg.add(var.set_timer_remaining_sensor(s))
+
+    if CONF_THERMOSTAT_DIRECTION in config:
+        ts = await text_sensor.new_text_sensor(config[CONF_THERMOSTAT_DIRECTION])
+        cg.add(var.set_thermostat_direction_sensor(ts))
+
+    if CONF_DEADBAND_ACTIVE in config:
+        bs = await binary_sensor.new_binary_sensor(config[CONF_DEADBAND_ACTIVE])
+        cg.add(var.set_deadband_active_sensor(bs))
+
+    if CONF_DEADBAND_EXPIRES_IN in config:
+        s = await sensor.new_sensor(config[CONF_DEADBAND_EXPIRES_IN])
+        cg.add(var.set_deadband_expires_in_sensor(s))
+
+    if CONF_REVERSING_VALVE in config:
+        bs = await binary_sensor.new_binary_sensor(config[CONF_REVERSING_VALVE])
+        cg.add(var.set_reversing_valve_sensor(bs))
+
+    if CONF_CALL_ACTIVE in config:
+        bs = await binary_sensor.new_binary_sensor(config[CONF_CALL_ACTIVE])
+        cg.add(var.set_call_active_sensor(bs))

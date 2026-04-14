@@ -203,6 +203,27 @@ float ActronB812Climate::timer_remaining_s_() {
   return 0.0f;
 }
 
+std::string ActronB812Climate::compute_thermostat_direction_str_() {
+  switch (thermostat_direction_) {
+    case THERMO_HEAT: return "heat";
+    case THERMO_COOL: return "cool";
+    default:          return "idle";
+  }
+}
+
+bool ActronB812Climate::deadband_active_() {
+  if (auto_deadband_direction_ == THERMO_OFF) return false;
+  if (auto_deadband_timeout_ms_ == 0) return true;
+  return (millis() - auto_deadband_idle_since_) < auto_deadband_timeout_ms_;
+}
+
+float ActronB812Climate::deadband_expires_in_s_() {
+  if (!deadband_active_() || auto_deadband_timeout_ms_ == 0) return 0.0f;
+  uint32_t elapsed = millis() - auto_deadband_idle_since_;
+  if (elapsed >= auto_deadband_timeout_ms_) return 0.0f;
+  return (auto_deadband_timeout_ms_ - elapsed) / 1000.0f;
+}
+
 void ActronB812Climate::publish_sensors_() {
   if (compressor_running_sensor_) {
     int running = comp_running_ ? 1 : 0;
@@ -225,6 +246,46 @@ void ActronB812Climate::publish_sensors_() {
     if (remaining_s != timer_remaining_last_s_) {
       timer_remaining_last_s_ = remaining_s;
       timer_remaining_sensor_->publish_state(static_cast<float>(remaining_s));
+    }
+  }
+
+  if (thermostat_direction_sensor_) {
+    std::string d = compute_thermostat_direction_str_();
+    if (d != thermostat_direction_last_) {
+      thermostat_direction_last_ = d;
+      thermostat_direction_sensor_->publish_state(d);
+    }
+  }
+
+  if (deadband_active_sensor_) {
+    int active = deadband_active_() ? 1 : 0;
+    if (active != deadband_active_last_) {
+      deadband_active_last_ = active;
+      deadband_active_sensor_->publish_state(active);
+    }
+  }
+
+  if (deadband_expires_in_sensor_) {
+    int expires_s = static_cast<int>(deadband_expires_in_s_());
+    if (expires_s != deadband_expires_in_last_s_) {
+      deadband_expires_in_last_s_ = expires_s;
+      deadband_expires_in_sensor_->publish_state(static_cast<float>(expires_s));
+    }
+  }
+
+  if (reversing_valve_sensor_) {
+    int val = (active_cmd_ & BIT_HEAT) ? 1 : 0;
+    if (val != reversing_valve_last_) {
+      reversing_valve_last_ = val;
+      reversing_valve_sensor_->publish_state(val);
+    }
+  }
+
+  if (call_active_sensor_) {
+    int val = (active_cmd_ & BIT_CALL) ? 1 : 0;
+    if (val != call_active_last_) {
+      call_active_last_ = val;
+      call_active_sensor_->publish_state(val);
     }
   }
 }

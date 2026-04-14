@@ -43,6 +43,11 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   void set_compressor_running_sensor(binary_sensor::BinarySensor *s) { compressor_running_sensor_ = s; }
   void set_state_sensor(text_sensor::TextSensor *s) { state_sensor_ = s; }
   void set_timer_remaining_sensor(sensor::Sensor *s) { timer_remaining_sensor_ = s; }
+  void set_thermostat_direction_sensor(text_sensor::TextSensor *s) { thermostat_direction_sensor_ = s; }
+  void set_deadband_active_sensor(binary_sensor::BinarySensor *s) { deadband_active_sensor_ = s; }
+  void set_deadband_expires_in_sensor(sensor::Sensor *s) { deadband_expires_in_sensor_ = s; }
+  void set_reversing_valve_sensor(binary_sensor::BinarySensor *s) { reversing_valve_sensor_ = s; }
+  void set_call_active_sensor(binary_sensor::BinarySensor *s) { call_active_sensor_ = s; }
 
   void setup() override;
   void update() override;  // Called every 222ms — sends current frame
@@ -92,13 +97,26 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   binary_sensor::BinarySensor *compressor_running_sensor_{nullptr};
   text_sensor::TextSensor *state_sensor_{nullptr};
   sensor::Sensor *timer_remaining_sensor_{nullptr};
-  int timer_remaining_last_s_{-1};  // dedup for timer sensor
-  std::string state_last_{"__unset__"};  // dedup for state sensor
-  int comp_running_last_{-1};  // dedup for compressor sensor (-1 = unset)
+  text_sensor::TextSensor *thermostat_direction_sensor_{nullptr};
+  binary_sensor::BinarySensor *deadband_active_sensor_{nullptr};
+  sensor::Sensor *deadband_expires_in_sensor_{nullptr};
+  binary_sensor::BinarySensor *reversing_valve_sensor_{nullptr};
+  binary_sensor::BinarySensor *call_active_sensor_{nullptr};
+  int timer_remaining_last_s_{-1};       // dedup
+  std::string state_last_{"__unset__"};  // dedup
+  int comp_running_last_{-1};            // dedup (-1 = unset)
+  std::string thermostat_direction_last_{"__unset__"};  // dedup
+  int deadband_active_last_{-1};         // dedup (-1 = unset)
+  int deadband_expires_in_last_s_{-1};   // dedup
+  int reversing_valve_last_{-1};         // dedup (-1 = unset)
+  int call_active_last_{-1};             // dedup (-1 = unset)
 
   bool comp_cooldown_elapsed_();
   bool valve_settled_();
   std::string compute_state_();
+  std::string compute_thermostat_direction_str_();
+  bool deadband_active_();
+  float deadband_expires_in_s_();
   float timer_remaining_s_();
   void publish_sensors_();
   void evaluate_thermostat_();

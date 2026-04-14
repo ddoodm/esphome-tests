@@ -53,3 +53,13 @@ climate:
     #           state: !lambda 'return x;'
     timer_remaining:
       name: "Aircon Timer Remaining"
+    thermostat_direction:
+      name: "Aircon Thermostat Direction"
+    deadband_active:
+      name: "Aircon Deadband Active"
+    deadband_expires_in:
+      name: "Aircon Deadband Expires In"
+    reversing_valve:
+      name: "Aircon Reversing Valve"
+    call_active:
+      name: "Aircon Call Active"
