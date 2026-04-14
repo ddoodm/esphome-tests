@@ -14,6 +14,7 @@ climate::ClimateTraits ActronB812Climate::traits() {
   traits.set_visual_min_temperature(19);
   traits.set_visual_max_temperature(29);
   traits.set_visual_target_temperature_step(0.5);
+  traits.set_visual_current_temperature_step(0.01);
   traits.set_supported_modes({
     climate::CLIMATE_MODE_OFF,
     climate::CLIMATE_MODE_COOL,
@@ -119,9 +120,17 @@ void ActronB812Climate::update() {
         ESP_LOGD(TAG, "Keeping HEAT on until cooldown elapses (%.0fs remaining)",
                  (comp_cooldown_ms_ - (millis() - comp_off_time_)) / 1000.0f);
       } else {
-        active_cmd_ = desired;
+        // After cooldown, keep the valve energised if we're in HEAT or HEAT_COOL
+        // mode — there's no reason to de-energise it until we actually need to cool.
+        // Switching it unnecessarily wastes a valve actuation and forces a 30s settle
+        // wait before the next heating cycle can start.
+        bool keep_heat = (active_cmd_ & BIT_HEAT) &&
+                         (pending_mode_ == climate::CLIMATE_MODE_HEAT ||
+                          pending_mode_ == climate::CLIMATE_MODE_HEAT_COOL);
+        active_cmd_ = keep_heat ? (desired | BIT_HEAT) : desired;
         pending_change_ = false;
-        ESP_LOGD(TAG, "Applying command 0x%02X", active_cmd_);
+        ESP_LOGD(TAG, "Applying command 0x%02X%s", active_cmd_,
+                 keep_heat ? " (valve held in HEAT)" : "");
       }
 
     // Step 1: If the heat direction is changing and comp is still running, stop it first.
@@ -190,6 +199,8 @@ std::string ActronB812Climate::compute_state_() {
     return "valve_settling";
   if (active_cmd_ & BIT_COMP)
     return (active_cmd_ & BIT_HEAT) ? "heating" : "cooling";
+  if (active_cmd_ & BIT_HEAT)
+    return "heat_idle";  // valve energised, compressor off (between heating cycles)
   if (active_cmd_ & (BIT_FS1 | BIT_FS2 | BIT_FS3))
     return "fan_only";
   return "off";
