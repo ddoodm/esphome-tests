@@ -61,14 +61,14 @@ lvgl:
       widgets:
 
         # ── Top button row ─────────────────────────────────────────────────────
-        # Fan speed button (top-left, x=17)
+        # Fan speed button (top-left, x=15)
         - button:
             id: btn_fan
-            x: 17
+            x: 15
             y: 20
-            width: 76
-            height: 76
-            radius: 38
+            width: 114
+            height: 114
+            radius: 57
             bg_opa: transp
             border_color: 0x2E2E2E
             border_width: 2
@@ -91,14 +91,14 @@ lvgl:
                   text_font: mdi_36
                   text_color: 0x777777
 
-        # Fan auto toggle (x=107) — highlights peppermint when active
+        # Fan auto toggle (x=141) — highlights peppermint when active
         - button:
             id: btn_fan_auto
-            x: 107
+            x: 141
             y: 20
-            width: 76
-            height: 76
-            radius: 38
+            width: 114
+            height: 114
+            radius: 57
             bg_opa: transp
             border_color: 0x2E2E2E
             border_width: 2
@@ -122,14 +122,14 @@ lvgl:
                   text_font: mdi_36
                   text_color: 0x777777
 
-        # Mode button (top-right, x=357) — icon updates to selected mode
+        # Mode button (top-right, x=321) — icon updates to selected mode
         - button:
             id: btn_mode
-            x: 357
+            x: 321
             y: 20
-            width: 76
-            height: 76
-            radius: 38
+            width: 114
+            height: 114
+            radius: 57
             bg_opa: transp
             border_color: 0x2E2E2E
             border_width: 2
@@ -152,13 +152,13 @@ lvgl:
                   text_font: mdi_36
                   text_color: 0x777777
 
-        # ── Arc area: 320×320, centered horizontally at y=140 ─────────────────
+        # ── Arc area: 300×300, centered horizontally at y=150 ─────────────────
         # All 3 arcs share the same container and geometry (100% × 100%).
         - obj:
             align: TOP_MID
-            y: 140
-            width: 320
-            height: 320
+            y: 155
+            width: 330
+            height: 330
             bg_opa: transp
             border_width: 0
             pad_all: 0
@@ -175,15 +175,15 @@ lvgl:
                   width: 100%
                   height: 100%
                   arc_color: 0x1A1A1A
-                  arc_width: 28
+                  arc_width: 32
                   indicator:
-                    arc_color: 0x00D9A3
-                    arc_width: 28
+                    arc_color: 0x006B50
+                    arc_width: 32
                   knob:
                     bg_opa: transp
                     border_opa: transp
 
-              # Arc 2 — dim peppermint diff segment (current → setpoint gap)
+              # Arc 2 — bright peppermint diff segment (current → setpoint gap)
               # Trick: arc_width=0 hides the BG ring; only indicator shows.
               # start_angle/end_angle constrain the window; value=100 fills it.
               - arc:
@@ -199,8 +199,8 @@ lvgl:
                   height: 100%
                   arc_width: 0
                   indicator:
-                    arc_color: 0x006B50
-                    arc_width: 28
+                    arc_color: 0x00D9A3
+                    arc_width: 32
                   knob:
                     bg_opa: transp
                     border_opa: transp
@@ -218,13 +218,13 @@ lvgl:
                   height: 100%
                   arc_width: 0
                   indicator:
-                    arc_width: 28
+                    arc_width: 32
                     arc_opa: 0%
                   knob:
-                    bg_color: 0x00D9A3
-                    border_color: 0x000000
-                    border_width: 2
-                    pad_all: -2
+                    bg_color: 0xDDDDDD
+                    border_width: 0
+                    border_opa: transp
+                    pad_all: -8
 
               # Temperature label — centered inside the arc
               - obj:
@@ -250,14 +250,14 @@ lvgl:
                         pad_bottom: 16
 
         # ── Bottom button row ──────────────────────────────────────────────────
-        # Temp minus (bottom-left, x=17)
+        # Temp minus (bottom-left, x=15)
         - button:
             id: btn_temp_minus
-            x: 17
-            y: 490
-            width: 76
-            height: 76
-            radius: 38
+            x: 15
+            y: 466
+            width: 114
+            height: 114
+            radius: 57
             bg_opa: transp
             border_color: 0x2E2E2E
             border_width: 2
@@ -300,14 +300,14 @@ lvgl:
                   text_font: mdi_36
                   text_color: 0x777777
 
-        # Power button (bottom-center, x=187) — toggles AC on/off
+        # Power button (bottom-center, x=168) — toggles AC on/off
         - button:
             id: btn_power
-            x: 187
-            y: 490
-            width: 76
-            height: 76
-            radius: 38
+            x: 168
+            y: 466
+            width: 114
+            height: 114
+            radius: 57
             bg_opa: transp
             border_color: 0x2E2E2E
             border_width: 2
@@ -331,14 +331,14 @@ lvgl:
                   text_font: mdi_36
                   text_color: 0x777777
 
-        # Temp plus (bottom-right, x=357)
+        # Temp plus (bottom-right, x=321)
         - button:
             id: btn_temp_plus
-            x: 357
-            y: 490
-            width: 76
-            height: 76
-            radius: 38
+            x: 321
+            y: 466
+            width: 114
+            height: 114
+            radius: 57
             bg_opa: transp
             border_color: 0x2E2E2E
             border_width: 2
@@ -388,9 +388,9 @@ lvgl:
             id: fan_popup
             hidden: true
             x: 0
-            y: 110
-            width: 200
-            height: 252
+            y: 134
+            width: 210
+            height: 302
             radius: 16
             border_width: 1
             border_color: 0x2E2E2E
@@ -399,11 +399,11 @@ lvgl:
             widgets:
               - button:
                   id: btn_fan_low
-                  x: 70
-                  y: 14
-                  width: 60
-                  height: 60
-                  radius: 30
+                  x: 60
+                  y: 8
+                  width: 90
+                  height: 90
+                  radius: 45
                   bg_opa: transp
                   border_color: 0x2E2E2E
                   border_width: 2
@@ -423,11 +423,11 @@ lvgl:
                         text_color: 0x00D9A3
               - button:
                   id: btn_fan_med
-                  x: 70
-                  y: 96
-                  width: 60
-                  height: 60
-                  radius: 30
+                  x: 60
+                  y: 106
+                  width: 90
+                  height: 90
+                  radius: 45
                   bg_opa: transp
                   border_color: 0x2E2E2E
                   border_width: 2
@@ -447,11 +447,11 @@ lvgl:
                         text_color: 0x00D9A3
               - button:
                   id: btn_fan_high
-                  x: 70
-                  y: 178
-                  width: 60
-                  height: 60
-                  radius: 30
+                  x: 60
+                  y: 204
+                  width: 90
+                  height: 90
+                  radius: 45
                   bg_opa: transp
                   border_color: 0x2E2E2E
                   border_width: 2
@@ -477,10 +477,10 @@ lvgl:
         - obj:
             id: mode_popup
             hidden: true
-            x: 250
-            y: 110
-            width: 200
-            height: 252
+            x: 240
+            y: 134
+            width: 210
+            height: 302
             radius: 16
             border_width: 1
             border_color: 0x2E2E2E
@@ -489,11 +489,11 @@ lvgl:
             widgets:
               - button:
                   id: btn_cool
-                  x: 70
-                  y: 14
-                  width: 60
-                  height: 60
-                  radius: 30
+                  x: 60
+                  y: 8
+                  width: 90
+                  height: 90
+                  radius: 45
                   bg_opa: transp
                   border_color: 0x2E2E2E
                   border_width: 2
@@ -513,11 +513,11 @@ lvgl:
                         text_color: 0x00D9A3
               - button:
                   id: btn_heat
-                  x: 70
-                  y: 96
-                  width: 60
-                  height: 60
-                  radius: 30
+                  x: 60
+                  y: 106
+                  width: 90
+                  height: 90
+                  radius: 45
                   bg_opa: transp
                   border_color: 0x2E2E2E
                   border_width: 2
@@ -537,11 +537,11 @@ lvgl:
                         text_color: 0x00D9A3
               - button:
                   id: btn_auto
-                  x: 70
-                  y: 178
-                  width: 60
-                  height: 60
-                  radius: 30
+                  x: 60
+                  y: 204
+                  width: 90
+                  height: 90
+                  radius: 45
                   bg_opa: transp
                   border_color: 0x2E2E2E
                   border_width: 2
