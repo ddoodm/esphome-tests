@@ -39,8 +39,9 @@ climate:
     temperature_sensor_id: room_temp
     hysteresis: 0.2         # degrees C, optional — defaults to 0.5
     auto_deadband: 1.0       # degrees C, the gap between heating and cooling in HEAT_COOL mode
-    compressor_cooldown: 3min
-    valve_settle_time: 30s
+    auto_deadband_timeout: 20min  # deadband expires after this long idle; allows response to slow drift
+    compressor_cooldown: 4min
+    valve_settle_time: 40s
     compressor_running:
       name: "Aircon Compressor Running"
     state:

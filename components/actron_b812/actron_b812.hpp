@@ -38,6 +38,7 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   void set_temperature_sensor(sensor::Sensor *s) { temperature_sensor_ = s; }
   void set_hysteresis(float h) { hysteresis_ = h; }
   void set_auto_deadband(float d) { auto_deadband_ = d; }
+  void set_auto_deadband_timeout(uint32_t ms) { auto_deadband_timeout_ms_ = ms; }
 
   void set_compressor_running_sensor(binary_sensor::BinarySensor *s) { compressor_running_sensor_ = s; }
   void set_state_sensor(text_sensor::TextSensor *s) { state_sensor_ = s; }
@@ -65,11 +66,16 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   sensor::Sensor *temperature_sensor_{nullptr};
   float hysteresis_{0.5f};
   float auto_deadband_{1.0f};
+  // How long after going idle before the cross-mode deadband expires.
+  // Prevents slow thermal drift (e.g. sun warming room) from being blocked by overshoot protection.
+  // Set to 0 to disable. Default 20 min.
+  uint32_t auto_deadband_timeout_ms_{20 * 60 * 1000};
+  uint32_t auto_deadband_idle_since_{0};  // millis() when thermostat last went idle
   ThermostatDirection thermostat_direction_{THERMO_OFF};
   // In HEAT_COOL mode: tracks which direction was last active so we can apply
   // auto_deadband_ before allowing the *opposite* direction to engage.
-  // Cleared to THERMO_OFF on mode change so fresh-engage uses hysteresis_ only.
-  ThermostatDirection auto_last_direction_{THERMO_OFF};
+  // Cleared to THERMO_OFF on mode/setpoint change so fresh-engage uses hysteresis_ only.
+  ThermostatDirection auto_deadband_direction_{THERMO_OFF};
 
   // Compressor protection
   uint32_t comp_cooldown_ms_{3 * 60 * 1000};  // time comp must be off before restarting

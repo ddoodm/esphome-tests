@@ -52,7 +52,7 @@ void ActronB812Climate::setup() {
 void ActronB812Climate::control(const climate::ClimateCall &call) {
   if (call.get_mode().has_value()) {
     if (*call.get_mode() != pending_mode_)
-      auto_last_direction_ = THERMO_OFF;  // fresh engage — don't apply cross-mode deadband yet
+      auto_deadband_direction_ = THERMO_OFF;  // fresh engage — don't apply cross-mode deadband yet
     pending_mode_ = *call.get_mode();
   }
   if (call.get_fan_mode().has_value()) {
@@ -62,7 +62,7 @@ void ActronB812Climate::control(const climate::ClimateCall &call) {
   }
   if (call.get_target_temperature().has_value()) {
     if (*call.get_target_temperature() != this->target_temperature)
-      auto_last_direction_ = THERMO_OFF;
+      auto_deadband_direction_ = THERMO_OFF;
     this->target_temperature = *call.get_target_temperature();
   }
 
@@ -267,8 +267,13 @@ void ActronB812Climate::evaluate_thermostat_() {
       // Idle. If we just came from the opposite direction, require the full
       // auto_deadband_ before engaging it — prevents overshoot from triggering
       // a mode flip. Same-direction re-engage and fresh-engage use hysteresis_.
-      float cool_thresh = (auto_last_direction_ == THERMO_HEAT) ? tgt + auto_deadband_ : tgt + hysteresis_;
-      float heat_thresh = (auto_last_direction_ == THERMO_COOL) ? tgt - auto_deadband_ : tgt - hysteresis_;
+      // After auto_deadband_timeout_ms_ of being idle the protection expires,
+      // allowing normal hysteresis to respond to slow drift (e.g. sun).
+      bool deadband_expired = (auto_deadband_timeout_ms_ > 0) &&
+                              ((millis() - auto_deadband_idle_since_) >= auto_deadband_timeout_ms_);
+      ThermostatDirection guard = deadband_expired ? THERMO_OFF : auto_deadband_direction_;
+      float cool_thresh = (guard == THERMO_HEAT) ? tgt + auto_deadband_ : tgt + hysteresis_;
+      float heat_thresh = (guard == THERMO_COOL) ? tgt - auto_deadband_ : tgt - hysteresis_;
       if (t > cool_thresh)
         want = THERMO_COOL;
       else if (t < heat_thresh)
@@ -281,7 +286,9 @@ void ActronB812Climate::evaluate_thermostat_() {
 
   if (want != thermostat_direction_) {
     if (want != THERMO_OFF)
-      auto_last_direction_ = want;
+      auto_deadband_direction_ = want;
+    else
+      auto_deadband_idle_since_ = millis();
     thermostat_direction_ = want;
     pending_change_ = true;
     ESP_LOGD(TAG, "Thermostat -> %s",
