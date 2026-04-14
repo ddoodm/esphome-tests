@@ -5,3 +5,4 @@
 /secrets.yaml
 components/actron_b812/__pycache__/
 .clangd
+tests/build/
