@@ -36,6 +36,8 @@ class TestableClimate : public ActronB812Climate {
   using ActronB812Climate::valve_switch_time_;
   using ActronB812Climate::comp_cooldown_ms_;
   using ActronB812Climate::valve_settle_ms_;
+  using ActronB812Climate::evaluate_thermostat_;
+  using ActronB812Climate::update_action_;
 };
 
 // ---------------------------------------------------------------------------
@@ -91,6 +93,14 @@ class Harness {
     uint32_t start = s_fake_millis;
     while (s_fake_millis - start < total_ms)
       tick();
+  }
+
+  // Simulate a temperature sensor callback: update the reading and let the
+  // thermostat re-evaluate (exactly what the real sensor callback does).
+  void set_temperature(float t) {
+    climate.current_temperature = t;
+    climate.evaluate_thermostat_();
+    climate.update_action_();
   }
 
   // ------------------------------------------------------------------
@@ -345,6 +355,258 @@ TEST_CASE("Regression: switching COOL->HEAT does not start cooling", "[regressio
       CHECK(heat);  // if compressor ever runs, it must be in HEAT (not COOL) mode
     }
   }
+
+  h.check_invariants();
+}
+
+// ---------------------------------------------------------------------------
+// Cycle statistics — counts compressor starts, valve switches, and measures
+// minimum intervals across a frame history.
+// ---------------------------------------------------------------------------
+struct CycleStats {
+  int comp_starts = 0;
+  int valve_switches = 0;
+  uint32_t min_comp_run_ms = UINT32_MAX;
+  uint32_t min_comp_off_ms = UINT32_MAX;
+  uint32_t min_valve_interval_ms = UINT32_MAX;
+};
+
+static CycleStats compute_cycle_stats(const std::vector<Frame> &frames) {
+  CycleStats s;
+  // Initial state before any frame: comp off, no HEAT — matches hardware
+  // power-on defaults, so the first real transition is correctly counted.
+  bool prev_comp = false;
+  bool prev_heat = false;
+  uint32_t comp_on_time = 0;
+  uint32_t comp_off_time = 0;
+  bool had_comp_stop = false;
+  uint32_t last_valve_time = 0;
+  bool had_valve_switch = false;
+
+  for (auto &f : frames) {
+    bool comp = f.comp_running;
+    bool heat = (f.cmd & BIT_HEAT) != 0;
+
+    if (!prev_comp && comp) {
+      s.comp_starts++;
+      comp_on_time = f.time_ms;
+      if (had_comp_stop) {
+        uint32_t gap = f.time_ms - comp_off_time;
+        if (gap < s.min_comp_off_ms)
+          s.min_comp_off_ms = gap;
+      }
+    }
+    if (prev_comp && !comp) {
+      comp_off_time = f.time_ms;
+      had_comp_stop = true;
+      uint32_t run = f.time_ms - comp_on_time;
+      if (run < s.min_comp_run_ms)
+        s.min_comp_run_ms = run;
+    }
+    if (heat != prev_heat) {
+      s.valve_switches++;
+      if (had_valve_switch) {
+        uint32_t gap = f.time_ms - last_valve_time;
+        if (gap < s.min_valve_interval_ms)
+          s.min_valve_interval_ms = gap;
+      }
+      last_valve_time = f.time_ms;
+      had_valve_switch = true;
+    }
+
+    prev_comp = comp;
+    prev_heat = heat;
+  }
+  return s;
+}
+
+// ===========================================================================
+// Rapid-cycling tests
+// ===========================================================================
+
+TEST_CASE("Sawtooth temperature: comp cycles bounded by cooldown", "[cycling]") {
+  Harness h;
+
+  h.climate.current_temperature = 25.0f;
+  h.set_mode(climate::CLIMATE_MODE_COOL);
+  h.run_for(2000);
+  REQUIRE(h.climate.comp_running_);
+
+  // Swing temp wildly every 10 s — crosses both engage (22.5) and
+  // disengage (22.0) thresholds.  Each swing wants to start/stop the
+  // compressor, but cooldown must limit the actual cycle rate.
+  for (int i = 0; i < 30; i++) {
+    h.set_temperature(25.0f);
+    h.run_for(10'000);
+    h.set_temperature(20.0f);
+    h.run_for(10'000);
+  }
+  // 30 swings × 20 s = 600 s total.
+  // Cooldown is 180 s, so max restarts ≈ 600/180 + 1 ≈ 4–5.
+  auto stats = compute_cycle_stats(h.frames);
+  INFO("comp_starts=" << stats.comp_starts
+        << "  min_comp_off_ms=" << stats.min_comp_off_ms);
+  CHECK(stats.comp_starts <= 5);
+  CHECK(stats.min_comp_off_ms >= COOLDOWN_MS);
+  CHECK(stats.valve_switches == 0);  // COOL mode — valve never touched
+
+  h.check_invariants();
+}
+
+TEST_CASE("Noisy sensor near threshold: thermostat stays stable", "[cycling]") {
+  Harness h;
+
+  h.climate.current_temperature = 22.4f;
+  h.set_mode(climate::CLIMATE_MODE_COOL);
+
+  // Oscillate rapidly across the engage threshold (22.5).
+  // Once cooling engages, it should stick until temp drops below target (22.0),
+  // which these small swings never do.
+  for (int i = 0; i < 200; i++) {
+    h.set_temperature(22.4f + (i % 2) * 0.2f);  // alternates 22.4 / 22.6
+    h.tick();
+  }
+
+  auto stats = compute_cycle_stats(h.frames);
+  CHECK(stats.comp_starts <= 1);  // at most the initial engage
+
+  // Now oscillate across the disengage threshold (22.0) while cooling.
+  // Once cooling disengages, it should NOT re-engage until temp > 22.5,
+  // which these swings never reach.
+  h.set_temperature(21.9f);  // disengage
+  h.tick();
+  int direction_changes = 0;
+  ThermostatDirection prev = h.climate.thermostat_direction_;
+
+  for (int i = 0; i < 200; i++) {
+    h.set_temperature(21.9f + (i % 2) * 0.2f);  // alternates 21.9 / 22.1
+    h.tick();
+    if (h.climate.thermostat_direction_ != prev) {
+      direction_changes++;
+      prev = h.climate.thermostat_direction_;
+    }
+  }
+  // At most 1 direction change (the initial disengage). No re-engagement.
+  CHECK(direction_changes <= 1);
+
+  h.check_invariants();
+}
+
+TEST_CASE("HEAT_COOL: deadband prevents valve ping-pong from overshoot", "[cycling]") {
+  Harness h;
+  h.climate.set_auto_deadband(1.0f);
+
+  // Start warm — cooling should engage (23 > 22 + 0.5)
+  h.climate.current_temperature = 23.0f;
+  h.set_mode(climate::CLIMATE_MODE_HEAT_COOL);
+  h.run_for(2000);
+  REQUIRE(h.climate.comp_running_);
+  REQUIRE((h.climate.active_cmd_ & BIT_HEAT) == 0);  // cooling
+
+  // Cooling brings temp slightly below target (overshoot) — should go idle,
+  // NOT flip to heating.  Heat threshold with deadband = 22 - 1.0 = 21.0.
+  h.set_temperature(21.8f);
+  h.run_for(2000);
+  CHECK(h.climate.thermostat_direction_ == THERMO_OFF);
+
+  // Even after all timers expire, heating must not engage at 21.8
+  h.run_for(COOLDOWN_MS + SETTLE_MS + 5000);
+  CHECK_FALSE(h.climate.comp_running_);
+
+  // But if temp truly drops past the deadband, heating engages
+  h.set_temperature(20.5f);
+  h.run_for(COOLDOWN_MS + SETTLE_MS + 5000);
+  REQUIRE(h.climate.comp_running_);
+  REQUIRE((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+  // And after heating, the reverse deadband protects against cooling re-engage.
+  // Cool threshold with deadband = 22 + 1.0 = 23.0
+  h.set_temperature(22.3f);  // above target but below 23.0 — should idle, not cool
+  h.run_for(COOLDOWN_MS + SETTLE_MS + 5000);
+  CHECK(h.climate.thermostat_direction_ == THERMO_OFF);
+
+  auto stats = compute_cycle_stats(h.frames);
+  INFO("comp_starts=" << stats.comp_starts << "  valve_switches=" << stats.valve_switches);
+  CHECK(stats.comp_starts == 2);      // exactly: one cool, one heat
+  CHECK(stats.valve_switches == 1);   // one transition: cool→heat
+
+  h.check_invariants();
+}
+
+TEST_CASE("HEAT_COOL: 30 min session with realistic temp swings", "[cycling]") {
+  Harness h;
+  h.climate.set_auto_deadband(1.0f);
+
+  h.climate.current_temperature = 23.5f;
+  h.set_mode(climate::CLIMATE_MODE_HEAT_COOL);
+
+  // Simulate 30 minutes of temperature drifting in a sinusoidal-ish pattern
+  // around the setpoint (22°C) with ±2°C amplitude.  Temperature updates
+  // arrive every ~10 s (realistic for a BLE sensor).
+  constexpr uint32_t SIM_DURATION = 30 * 60 * 1000;  // 30 min
+  constexpr uint32_t SENSOR_INTERVAL = 10'000;        // 10 s
+  constexpr int STEPS = SIM_DURATION / SENSOR_INTERVAL;
+
+  for (int i = 0; i < STEPS; i++) {
+    // Crude sine: amplitude 2°C, period ~8 min
+    float phase = static_cast<float>(i) / 48.0f * 6.2832f;
+    float temp = 22.0f + 2.0f * sinf(phase);
+    h.set_temperature(temp);
+    h.run_for(SENSOR_INTERVAL);
+  }
+
+  auto stats = compute_cycle_stats(h.frames);
+  INFO("comp_starts=" << stats.comp_starts
+        << "  valve_switches=" << stats.valve_switches
+        << "  min_comp_off_ms=" << stats.min_comp_off_ms
+        << "  min_valve_interval_ms=" << stats.min_valve_interval_ms);
+
+  // With 3 min cooldown + 30 s settle, a full heat↔cool cycle takes at least
+  // ~7 min.  In 30 min that's at most ~4 full reversals.
+  CHECK(stats.valve_switches <= 8);
+  if (stats.min_comp_off_ms != UINT32_MAX)
+    CHECK(stats.min_comp_off_ms >= COOLDOWN_MS);
+  if (stats.min_valve_interval_ms != UINT32_MAX)
+    CHECK(stats.min_valve_interval_ms >= COOLDOWN_MS);
+
+  h.check_invariants();
+}
+
+TEST_CASE("User spamming HEAT/COOL 20 times", "[cycling]") {
+  Harness h;
+
+  // Start with compressor running in COOL
+  h.climate.current_temperature = 25.0f;
+  h.set_mode(climate::CLIMATE_MODE_COOL);
+  h.run_for(2000);
+  REQUIRE(h.climate.comp_running_);
+
+  // Spam 20 mode toggles, 1 second apart — a truly chaotic user
+  for (int i = 0; i < 20; i++) {
+    if (i % 2 == 0) {
+      h.climate.current_temperature = 19.0f;
+      h.set_mode(climate::CLIMATE_MODE_HEAT);
+    } else {
+      h.climate.current_temperature = 25.0f;
+      h.set_mode(climate::CLIMATE_MODE_COOL);
+    }
+    h.run_for(1000);
+  }
+
+  // Let the system settle
+  h.run_for(COOLDOWN_MS + SETTLE_MS + 10'000);
+
+  auto stats = compute_cycle_stats(h.frames);
+  INFO("comp_starts=" << stats.comp_starts
+        << "  valve_switches=" << stats.valve_switches
+        << "  min_comp_off_ms=" << stats.min_comp_off_ms);
+
+  // 20 mode changes in 20 s, but cooldown is 180 s.
+  // The compressor can only start once initially plus at most once more
+  // after the spam settles and cooldown elapses.
+  CHECK(stats.comp_starts <= 3);
+  if (stats.min_comp_off_ms != UINT32_MAX)
+    CHECK(stats.min_comp_off_ms >= COOLDOWN_MS);
 
   h.check_invariants();
 }
