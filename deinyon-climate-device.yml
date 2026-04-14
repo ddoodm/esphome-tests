@@ -3,7 +3,7 @@ esphome:
   friendly_name: Deinyon Climate
 
 packages:
-  ui: !include deinyon-climate-ui2.yml
+  ui: !include deinyon-climate-ui3.yml
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -57,7 +57,6 @@ display:
       width: 450
       height: 600
       offset_width: 16
-    rotation: 270°
     brightness: 255
     cs_pin: 9
     reset_pin: 21
@@ -77,9 +76,6 @@ touchscreen:
     id: my_touchscreen
     display: my_display
     reset_pin: 3
-    transform:
-      swap_xy: true
-      mirror_x: true
 
 # Extended IO expander (TCA9554 = compatible with PCA9554 driver)
 pca9554:

@@ -2,7 +2,7 @@ esphome:
   name: deinyon-climate-host
 
 packages:
-  ui: !include deinyon-climate-ui2.yml
+  ui: !include deinyon-climate-ui3.yml
 
 host:
 
@@ -10,8 +10,8 @@ display:
   - platform: sdl
     id: my_display
     dimensions:
-      width: 600
-      height: 450
+      width: 450
+      height: 600
 
 touchscreen:
   - platform: sdl

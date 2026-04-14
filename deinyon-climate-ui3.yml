@@ -1,0 +1,561 @@
+# deinyon-climate-ui3.yml
+# V3 — Portrait arc, dark peppermint theme, 450×600
+# Requires: display id my_display, touchscreen (any platform)
+# Device must be in portrait orientation (no rotation: 270°)
+#
+# Arc value mapping: arc_val = (temp_c - 16) / 14.0 * 100
+#   16 °C → 0    22 °C → 43    30 °C → 100
+# Initial state: setpoint 22 °C (arc 43), current 19 °C (arc 21)
+
+esphome:
+  on_boot:
+    then:
+      # arc_current knob is for display only — block all touch on it
+      - lambda: lv_obj_clear_flag(id(arc_current), LV_OBJ_FLAG_CLICKABLE);
+
+globals:
+  - id: g_setpoint
+    type: int
+    initial_value: '22'
+  - id: g_setpoint_arc
+    type: int
+    initial_value: '43'
+  - id: g_fan_auto
+    type: bool
+    initial_value: 'false'
+  - id: g_power_on
+    type: bool
+    initial_value: 'false'
+
+font:
+  - file: "gfonts://Roboto"
+    id: roboto_96
+    size: 96
+    glyphs: "0123456789"
+  - file: "gfonts://Roboto"
+    id: roboto_32
+    size: 32
+    glyphs: "°C"
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: mdi_36
+    size: 36
+    bpp: 4
+    glyphs:
+      - "\U000F0425"  # mdi:power
+      - "\U000F0717"  # mdi:snowflake   (cool mode)
+      - "\U000F0238"  # mdi:fire        (heat mode)
+      - "\U000F0453"  # mdi:autorenew   (auto mode / fan auto)
+      - "\U000F0210"  # mdi:fan         (fan speed button)
+      - "\U000F0BAF"  # mdi:fan-speed-1 (low)
+      - "\U000F0BB0"  # mdi:fan-speed-2 (med)
+      - "\U000F0BB1"  # mdi:fan-speed-3 (high)
+      - "\U000F0374"  # mdi:minus       (temp −)
+      - "\U000F0417"  # mdi:plus        (temp +)
+
+lvgl:
+  displays:
+    - my_display
+  pages:
+    - id: main_page
+      bg_color: 0x000000
+      widgets:
+
+        # ── Top button row ─────────────────────────────────────────────────────
+        # Fan speed button (top-left, x=17)
+        - button:
+            id: btn_fan
+            x: 17
+            y: 20
+            width: 76
+            height: 76
+            radius: 38
+            bg_opa: transp
+            border_color: 0x2E2E2E
+            border_width: 2
+            pad_all: 0
+            on_click:
+              then:
+                - if:
+                    condition:
+                      lambda: return lv_obj_has_flag(id(fan_popup), LV_OBJ_FLAG_HIDDEN);
+                    then:
+                      - lvgl.widget.show: fan_popup
+                      - lvgl.widget.hide: mode_popup
+                    else:
+                      - lvgl.widget.hide: fan_popup
+            widgets:
+              - label:
+                  id: icon_fan
+                  align: CENTER
+                  text: "\U000F0210"
+                  text_font: mdi_36
+                  text_color: 0x777777
+
+        # Fan auto toggle (x=107) — highlights peppermint when active
+        - button:
+            id: btn_fan_auto
+            x: 107
+            y: 20
+            width: 76
+            height: 76
+            radius: 38
+            bg_opa: transp
+            border_color: 0x2E2E2E
+            border_width: 2
+            pad_all: 0
+            on_click:
+              then:
+                - lambda: |-
+                    id(g_fan_auto) = !id(g_fan_auto);
+                    if (id(g_fan_auto)) {
+                      lv_obj_set_style_border_color(id(btn_fan_auto), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                      lv_obj_set_style_text_color(id(icon_fan_auto), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                    } else {
+                      lv_obj_set_style_border_color(id(btn_fan_auto), lv_color_hex(0x2E2E2E), LV_STATE_DEFAULT);
+                      lv_obj_set_style_text_color(id(icon_fan_auto), lv_color_hex(0x777777), LV_STATE_DEFAULT);
+                    }
+            widgets:
+              - label:
+                  id: icon_fan_auto
+                  align: CENTER
+                  text: "\U000F0453"
+                  text_font: mdi_36
+                  text_color: 0x777777
+
+        # Mode button (top-right, x=357) — icon updates to selected mode
+        - button:
+            id: btn_mode
+            x: 357
+            y: 20
+            width: 76
+            height: 76
+            radius: 38
+            bg_opa: transp
+            border_color: 0x2E2E2E
+            border_width: 2
+            pad_all: 0
+            on_click:
+              then:
+                - if:
+                    condition:
+                      lambda: return lv_obj_has_flag(id(mode_popup), LV_OBJ_FLAG_HIDDEN);
+                    then:
+                      - lvgl.widget.show: mode_popup
+                      - lvgl.widget.hide: fan_popup
+                    else:
+                      - lvgl.widget.hide: mode_popup
+            widgets:
+              - label:
+                  id: icon_mode
+                  align: CENTER
+                  text: "\U000F0717"
+                  text_font: mdi_36
+                  text_color: 0x777777
+
+        # ── Arc area: 320×320, centered horizontally at y=140 ─────────────────
+        # All 3 arcs share the same container and geometry (100% × 100%).
+        - obj:
+            align: TOP_MID
+            y: 140
+            width: 320
+            height: 320
+            bg_opa: transp
+            border_width: 0
+            pad_all: 0
+            widgets:
+
+              # Arc 1 — dark-gray track + peppermint setpoint fill
+              # indicator fills from 0° to the setpoint arc value
+              - arc:
+                  id: arc_track
+                  adjustable: false
+                  min_value: 0
+                  max_value: 100
+                  value: 43
+                  width: 100%
+                  height: 100%
+                  arc_color: 0x1A1A1A
+                  arc_width: 28
+                  indicator:
+                    arc_color: 0x00D9A3
+                    arc_width: 28
+                  knob:
+                    bg_opa: transp
+                    border_opa: transp
+
+              # Arc 2 — dim peppermint diff segment (current → setpoint gap)
+              # Trick: arc_width=0 hides the BG ring; only indicator shows.
+              # start_angle/end_angle constrain the window; value=100 fills it.
+              - arc:
+                  id: arc_diff
+                  adjustable: false
+                  hidden: false
+                  min_value: 0
+                  max_value: 100
+                  value: 100
+                  start_angle: 192
+                  end_angle: 251
+                  width: 100%
+                  height: 100%
+                  arc_width: 0
+                  indicator:
+                    arc_color: 0x006B50
+                    arc_width: 28
+                  knob:
+                    bg_opa: transp
+                    border_opa: transp
+
+              # Arc 3 — current temperature dot marker (not interactive)
+              # adjustable: true required for LVGL to keep knob styled.
+              # LV_OBJ_FLAG_CLICKABLE cleared on boot so it won't capture touch.
+              - arc:
+                  id: arc_current
+                  adjustable: true
+                  min_value: 0
+                  max_value: 100
+                  value: 21
+                  width: 100%
+                  height: 100%
+                  arc_width: 0
+                  indicator:
+                    arc_width: 28
+                    arc_opa: 0%
+                  knob:
+                    bg_color: 0x00D9A3
+                    border_color: 0x000000
+                    border_width: 2
+                    pad_all: -2
+
+              # Temperature label — centered inside the arc
+              - obj:
+                  align: CENTER
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  layout:
+                    type: FLEX
+                    flex_flow: ROW
+                    flex_align_main: CENTER
+                    flex_align_cross: END
+                  widgets:
+                    - label:
+                        id: temp_label
+                        text: "22"
+                        text_color: 0xF5F5F5
+                        text_font: roboto_96
+                    - label:
+                        text: "°C"
+                        text_color: 0x777777
+                        text_font: roboto_32
+                        pad_bottom: 16
+
+        # ── Bottom button row ──────────────────────────────────────────────────
+        # Temp minus (bottom-left, x=17)
+        - button:
+            id: btn_temp_minus
+            x: 17
+            y: 490
+            width: 76
+            height: 76
+            radius: 38
+            bg_opa: transp
+            border_color: 0x2E2E2E
+            border_width: 2
+            pad_all: 0
+            on_click:
+              then:
+                - lambda: |-
+                    if (id(g_setpoint) > 16) {
+                      id(g_setpoint) -= 1;
+                      id(g_setpoint_arc) = (int)((id(g_setpoint) - 16.0f) / 14.0f * 100.0f);
+                    }
+                - lvgl.arc.update:
+                    id: arc_track
+                    value: !lambda return id(g_setpoint_arc);
+                - if:
+                    condition:
+                      lambda: return id(g_setpoint_arc) > 21;
+                    then:
+                      - lvgl.widget.update:
+                          id: arc_diff
+                          hidden: false
+                      - lvgl.arc.update:
+                          id: arc_diff
+                          start_angle: !lambda return (int)(135.0f + 21.0f / 100.0f * 270.0f);
+                          end_angle: !lambda return (int)(135.0f + (float)id(g_setpoint_arc) / 100.0f * 270.0f);
+                    else:
+                      - lvgl.widget.update:
+                          id: arc_diff
+                          hidden: true
+                - lvgl.label.update:
+                    id: temp_label
+                    text: !lambda |-
+                      char buf[4];
+                      snprintf(buf, sizeof(buf), "%d", id(g_setpoint));
+                      return std::string(buf);
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\U000F0374"
+                  text_font: mdi_36
+                  text_color: 0x777777
+
+        # Power button (bottom-center, x=187) — toggles AC on/off
+        - button:
+            id: btn_power
+            x: 187
+            y: 490
+            width: 76
+            height: 76
+            radius: 38
+            bg_opa: transp
+            border_color: 0x2E2E2E
+            border_width: 2
+            pad_all: 0
+            on_click:
+              then:
+                - lambda: |-
+                    id(g_power_on) = !id(g_power_on);
+                    if (id(g_power_on)) {
+                      lv_obj_set_style_border_color(id(btn_power), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                      lv_obj_set_style_text_color(id(icon_power), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                    } else {
+                      lv_obj_set_style_border_color(id(btn_power), lv_color_hex(0x2E2E2E), LV_STATE_DEFAULT);
+                      lv_obj_set_style_text_color(id(icon_power), lv_color_hex(0x777777), LV_STATE_DEFAULT);
+                    }
+            widgets:
+              - label:
+                  id: icon_power
+                  align: CENTER
+                  text: "\U000F0425"
+                  text_font: mdi_36
+                  text_color: 0x777777
+
+        # Temp plus (bottom-right, x=357)
+        - button:
+            id: btn_temp_plus
+            x: 357
+            y: 490
+            width: 76
+            height: 76
+            radius: 38
+            bg_opa: transp
+            border_color: 0x2E2E2E
+            border_width: 2
+            pad_all: 0
+            on_click:
+              then:
+                - lambda: |-
+                    if (id(g_setpoint) < 30) {
+                      id(g_setpoint) += 1;
+                      id(g_setpoint_arc) = (int)((id(g_setpoint) - 16.0f) / 14.0f * 100.0f);
+                    }
+                - lvgl.arc.update:
+                    id: arc_track
+                    value: !lambda return id(g_setpoint_arc);
+                - if:
+                    condition:
+                      lambda: return id(g_setpoint_arc) > 21;
+                    then:
+                      - lvgl.widget.update:
+                          id: arc_diff
+                          hidden: false
+                      - lvgl.arc.update:
+                          id: arc_diff
+                          start_angle: !lambda return (int)(135.0f + 21.0f / 100.0f * 270.0f);
+                          end_angle: !lambda return (int)(135.0f + (float)id(g_setpoint_arc) / 100.0f * 270.0f);
+                    else:
+                      - lvgl.widget.update:
+                          id: arc_diff
+                          hidden: true
+                - lvgl.label.update:
+                    id: temp_label
+                    text: !lambda |-
+                      char buf[4];
+                      snprintf(buf, sizeof(buf), "%d", id(g_setpoint));
+                      return std::string(buf);
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\U000F0417"
+                  text_font: mdi_36
+                  text_color: 0x777777
+
+        # ── Fan speed popup (floating overlay, hidden by default) ──────────────
+        # Appears below the fan button when tapped. Listed after arc so it
+        # renders on top. Three circular buttons: Low / Med / High.
+        - obj:
+            id: fan_popup
+            hidden: true
+            x: 0
+            y: 110
+            width: 200
+            height: 252
+            radius: 16
+            border_width: 1
+            border_color: 0x2E2E2E
+            bg_color: 0x0D0D0D
+            pad_all: 0
+            widgets:
+              - button:
+                  id: btn_fan_low
+                  x: 70
+                  y: 14
+                  width: 60
+                  height: 60
+                  radius: 30
+                  bg_opa: transp
+                  border_color: 0x2E2E2E
+                  border_width: 2
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.widget.hide: fan_popup
+                      - lambda: |-
+                          lv_label_set_text(id(icon_fan), "\U000F0BAF");
+                          lv_obj_set_style_text_color(id(icon_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                          lv_obj_set_style_border_color(id(btn_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0BAF"
+                        text_font: mdi_36
+                        text_color: 0x00D9A3
+              - button:
+                  id: btn_fan_med
+                  x: 70
+                  y: 96
+                  width: 60
+                  height: 60
+                  radius: 30
+                  bg_opa: transp
+                  border_color: 0x2E2E2E
+                  border_width: 2
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.widget.hide: fan_popup
+                      - lambda: |-
+                          lv_label_set_text(id(icon_fan), "\U000F0BB0");
+                          lv_obj_set_style_text_color(id(icon_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                          lv_obj_set_style_border_color(id(btn_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0BB0"
+                        text_font: mdi_36
+                        text_color: 0x00D9A3
+              - button:
+                  id: btn_fan_high
+                  x: 70
+                  y: 178
+                  width: 60
+                  height: 60
+                  radius: 30
+                  bg_opa: transp
+                  border_color: 0x2E2E2E
+                  border_width: 2
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.widget.hide: fan_popup
+                      - lambda: |-
+                          lv_label_set_text(id(icon_fan), "\U000F0BB1");
+                          lv_obj_set_style_text_color(id(icon_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                          lv_obj_set_style_border_color(id(btn_fan), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0BB1"
+                        text_font: mdi_36
+                        text_color: 0x00D9A3
+
+        # ── Mode popup (floating overlay, hidden by default) ───────────────────
+        # Appears near the mode button (top-right) when tapped. Listed after arc
+        # so it renders on top. Three circular buttons: Cool / Heat / Auto.
+        # Selecting a mode updates the btn_mode icon and highlights its border.
+        - obj:
+            id: mode_popup
+            hidden: true
+            x: 250
+            y: 110
+            width: 200
+            height: 252
+            radius: 16
+            border_width: 1
+            border_color: 0x2E2E2E
+            bg_color: 0x0D0D0D
+            pad_all: 0
+            widgets:
+              - button:
+                  id: btn_cool
+                  x: 70
+                  y: 14
+                  width: 60
+                  height: 60
+                  radius: 30
+                  bg_opa: transp
+                  border_color: 0x2E2E2E
+                  border_width: 2
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.widget.hide: mode_popup
+                      - lambda: |-
+                          lv_label_set_text(id(icon_mode), "\U000F0717");
+                          lv_obj_set_style_text_color(id(icon_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                          lv_obj_set_style_border_color(id(btn_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0717"
+                        text_font: mdi_36
+                        text_color: 0x00D9A3
+              - button:
+                  id: btn_heat
+                  x: 70
+                  y: 96
+                  width: 60
+                  height: 60
+                  radius: 30
+                  bg_opa: transp
+                  border_color: 0x2E2E2E
+                  border_width: 2
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.widget.hide: mode_popup
+                      - lambda: |-
+                          lv_label_set_text(id(icon_mode), "\U000F0238");
+                          lv_obj_set_style_text_color(id(icon_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                          lv_obj_set_style_border_color(id(btn_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0238"
+                        text_font: mdi_36
+                        text_color: 0x00D9A3
+              - button:
+                  id: btn_auto
+                  x: 70
+                  y: 178
+                  width: 60
+                  height: 60
+                  radius: 30
+                  bg_opa: transp
+                  border_color: 0x2E2E2E
+                  border_width: 2
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lvgl.widget.hide: mode_popup
+                      - lambda: |-
+                          lv_label_set_text(id(icon_mode), "\U000F0453");
+                          lv_obj_set_style_text_color(id(icon_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                          lv_obj_set_style_border_color(id(btn_mode), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0453"
+                        text_font: mdi_36
+                        text_color: 0x00D9A3

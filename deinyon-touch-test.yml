@@ -1,0 +1,164 @@
+# Touch calibration test — PORTRAIT orientation (no rotation).
+# Flash this instead of the main config to isolate transform/calibration.
+# Watch serial logs and drag your finger around all four edges.
+# Goal: confirm which raw axis tracks which physical direction.
+
+esphome:
+  name: deinyon-climate
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+  flash_size: 16MB
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+api:
+ota:
+  platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+spi:
+  id: quad_spi
+  type: quad
+  clk_pin: 10
+  data_pins: [11, 12, 13, 14]
+
+# Portrait, NO rotation — 450 wide × 600 tall, display as-is.
+display:
+  - platform: qspi_dbi
+    id: my_display
+    model: RM690B0
+    data_rate: 80MHz
+    dimensions:
+      width: 450
+      height: 600
+      offset_width: 16
+    brightness: 255
+    cs_pin: 9
+    reset_pin: 21
+    auto_clear_enabled: false
+    update_interval: never
+
+i2c:
+  id: my_i2c
+  sda: 47
+  scl: 48
+  scan: true
+
+# No transform at all — raw sensor coords go straight through.
+touchscreen:
+  - platform: ft63x6
+    id: my_touchscreen
+    display: my_display
+    reset_pin: 3
+    on_touch:
+      - lambda: |-
+          ESP_LOGI("touch_test", "x=%d y=%d  x_raw=%d y_raw=%d",
+            touch.x, touch.y, touch.x_raw, touch.y_raw);
+          // Also update the label so you can see it on screen.
+          char buf[48];
+          snprintf(buf, sizeof(buf), "x=%d y=%d\nx_raw=%d\ny_raw=%d",
+            touch.x, touch.y, touch.x_raw, touch.y_raw);
+          lv_label_set_text(id(touch_label), buf);
+          // Move the dot to the reported touch position.
+          lv_obj_set_x(id(touch_dot), touch.x - 10);
+          lv_obj_set_y(id(touch_dot), touch.y - 10);
+
+pca9554:
+  - id: extio_hub
+    address: 0x20
+
+switch:
+  - platform: gpio
+    pin: 4
+    id: vcc_enable
+    restore_mode: ALWAYS_ON
+    internal: true
+
+lvgl:
+  displays:
+    - my_display
+  pages:
+    - id: test_page
+      bg_color: 0x111111
+      widgets:
+
+        # Instructions
+        - label:
+            x: 10
+            y: 10
+            text: "Touch test — PORTRAIT"
+            text_color: 0xFFFFFF
+            text_font: montserrat_18
+
+        - label:
+            x: 10
+            y: 36
+            text: "Drag finger to all 4 corners"
+            text_color: 0xAAAAAA
+            text_font: montserrat_14
+
+        # Live readout of touch coords
+        - label:
+            id: touch_label
+            x: 10
+            y: 70
+            text: "touch here"
+            text_color: 0x00FFAA
+            text_font: montserrat_18
+
+        # Horizontal guide bar (top and bottom edges)
+        - obj:
+            x: 0
+            y: 0
+            width: 450
+            height: 4
+            bg_color: 0xFF4400
+            border_width: 0
+            radius: 0
+        - obj:
+            x: 0
+            y: 596
+            width: 450
+            height: 4
+            bg_color: 0xFF4400
+            border_width: 0
+            radius: 0
+
+        # Vertical guide bar (left and right edges)
+        - obj:
+            x: 0
+            y: 0
+            width: 4
+            height: 600
+            bg_color: 0x0088FF
+            border_width: 0
+            radius: 0
+        - obj:
+            x: 446
+            y: 0
+            width: 4
+            height: 600
+            bg_color: 0x0088FF
+            border_width: 0
+            radius: 0
+
+        # Moving dot — tracks the reported touch position
+        - obj:
+            id: touch_dot
+            x: 215
+            y: 290
+            width: 20
+            height: 20
+            radius: 10
+            bg_color: 0xFFFF00
+            border_width: 2
+            border_color: 0xFF8800
