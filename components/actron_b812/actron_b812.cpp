@@ -22,6 +22,7 @@ climate::ClimateTraits ActronB812Climate::traits() {
     climate::CLIMATE_MODE_FAN_ONLY,
   });
   traits.set_supported_fan_modes({
+    climate::CLIMATE_FAN_AUTO,
     climate::CLIMATE_FAN_LOW,
     climate::CLIMATE_FAN_MEDIUM,
     climate::CLIMATE_FAN_HIGH,
@@ -54,8 +55,11 @@ void ActronB812Climate::control(const climate::ClimateCall &call) {
       auto_last_direction_ = THERMO_OFF;  // fresh engage — don't apply cross-mode deadband yet
     pending_mode_ = *call.get_mode();
   }
-  if (call.get_fan_mode().has_value())
+  if (call.get_fan_mode().has_value()) {
     pending_fan_ = *call.get_fan_mode();
+    if (pending_fan_ != climate::CLIMATE_FAN_AUTO)
+      pending_auto_fan_speed_ = pending_fan_;
+  }
   if (call.get_target_temperature().has_value())
     this->target_temperature = *call.get_target_temperature();
 
@@ -75,13 +79,19 @@ void ActronB812Climate::control(const climate::ClimateCall &call) {
 void ActronB812Climate::update() {
   // Fan speed is always applied immediately, even during cooldown waits.
   // Skip when OFF — CMD_OFF zeroes all bits including fan.
+  // In AUTO mode the fan only runs while the compressor is physically on.
   if (pending_mode_ != climate::CLIMATE_MODE_OFF) {
     active_cmd_ &= ~(BIT_FS1 | BIT_FS2 | BIT_FS3);
-    switch (pending_fan_) {
-      case climate::CLIMATE_FAN_LOW:    active_cmd_ |= BIT_FS1; break;
-      case climate::CLIMATE_FAN_MEDIUM: active_cmd_ |= BIT_FS2; break;
-      case climate::CLIMATE_FAN_HIGH:   active_cmd_ |= BIT_FS3; break;
-      default: break;
+    bool apply_fan = (pending_fan_ != climate::CLIMATE_FAN_AUTO) || comp_running_;
+    if (apply_fan) {
+      climate::ClimateFanMode speed =
+          (pending_fan_ == climate::CLIMATE_FAN_AUTO) ? pending_auto_fan_speed_ : pending_fan_;
+      switch (speed) {
+        case climate::CLIMATE_FAN_LOW:    active_cmd_ |= BIT_FS1; break;
+        case climate::CLIMATE_FAN_MEDIUM: active_cmd_ |= BIT_FS2; break;
+        case climate::CLIMATE_FAN_HIGH:   active_cmd_ |= BIT_FS3; break;
+        default: break;
+      }
     }
   }
 
@@ -312,12 +322,20 @@ uint8_t ActronB812Climate::build_cmd_(climate::ClimateMode mode,
                                       climate::ClimateFanMode fan) {
   uint8_t cmd = BIT_FRM1 | BIT_FRM2;
 
-  // Fan speed
-  switch (fan) {
-    case climate::CLIMATE_FAN_LOW:    cmd |= BIT_FS1; break;
-    case climate::CLIMATE_FAN_MEDIUM: cmd |= BIT_FS2; break;
-    case climate::CLIMATE_FAN_HIGH:   cmd |= BIT_FS3; break;
-    default: break;
+  // In AUTO mode the fan only follows the compressor: suppress fan bits when the
+  // effective mode is FAN_ONLY (thermostat idle).  Use the last manual speed otherwise.
+  bool apply_fan = (fan != climate::CLIMATE_FAN_AUTO) ||
+                   (mode == climate::CLIMATE_MODE_COOL || mode == climate::CLIMATE_MODE_HEAT);
+  climate::ClimateFanMode speed =
+      (fan == climate::CLIMATE_FAN_AUTO) ? pending_auto_fan_speed_ : fan;
+
+  if (apply_fan) {
+    switch (speed) {
+      case climate::CLIMATE_FAN_LOW:    cmd |= BIT_FS1; break;
+      case climate::CLIMATE_FAN_MEDIUM: cmd |= BIT_FS2; break;
+      case climate::CLIMATE_FAN_HIGH:   cmd |= BIT_FS3; break;
+      default: break;
+    }
   }
 
   // Mode

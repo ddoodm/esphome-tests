@@ -57,6 +57,8 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   // What HA has asked for — may differ from active if we're waiting on a timer
   climate::ClimateMode pending_mode_{climate::CLIMATE_MODE_OFF};
   climate::ClimateFanMode pending_fan_{climate::CLIMATE_FAN_LOW};
+  // Speed to use when pending_fan_ == AUTO; updated whenever a concrete speed is selected.
+  climate::ClimateFanMode pending_auto_fan_speed_{climate::CLIMATE_FAN_LOW};
   bool pending_change_{false};
 
   // Thermostat
