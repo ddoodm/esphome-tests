@@ -60,8 +60,11 @@ void ActronB812Climate::control(const climate::ClimateCall &call) {
     if (pending_fan_ != climate::CLIMATE_FAN_AUTO)
       pending_auto_fan_speed_ = pending_fan_;
   }
-  if (call.get_target_temperature().has_value())
+  if (call.get_target_temperature().has_value()) {
+    if (*call.get_target_temperature() != this->target_temperature)
+      auto_last_direction_ = THERMO_OFF;
     this->target_temperature = *call.get_target_temperature();
+  }
 
   evaluate_thermostat_();
 
