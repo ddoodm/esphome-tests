@@ -41,6 +41,7 @@ esphome:
             lv_obj_add_style(_btns[i], &_s_pressed, LV_STATE_PRESSED);
           }
       - script.execute: apply_mode_style
+      - script.execute: screen_dim
 
 globals:
   - id: g_setpoint
@@ -72,6 +73,9 @@ globals:
   - id: g_accent_hex
     type: uint32_t
     initial_value: '0x444444'
+  - id: g_dimmed
+    type: bool
+    initial_value: 'false'
 
 font:
   - file: "gfonts://Roboto"
@@ -221,6 +225,28 @@ script:
           lv_obj_set_style_text_color(id(icon_fan_pop_low),  popup_col, LV_STATE_DEFAULT);
           lv_obj_set_style_text_color(id(icon_fan_pop_med),  popup_col, LV_STATE_DEFAULT);
           lv_obj_set_style_text_color(id(icon_fan_pop_high), popup_col, LV_STATE_DEFAULT);
+
+  # Idle screen-dim timer — restart on any user activity.
+  # Short delay for testing; increase to e.g. 60s for production.
+  - id: screen_dim
+    mode: restart
+    then:
+      - delay: 10s
+      - lambda: |-
+          id(g_dimmed) = true;
+          id(my_display).set_brightness(8);
+          lv_obj_clear_flag(id(dim_backdrop), LV_OBJ_FLAG_HIDDEN);
+
+  # Wake the screen: restore brightness and hide the intercept layer.
+  # Guards against being called when already awake.
+  - id: screen_wake
+    then:
+      - lambda: |-
+          if (!id(g_dimmed)) return;
+          id(g_dimmed) = false;
+          id(my_display).set_brightness(255);
+          lv_obj_add_flag(id(dim_backdrop), LV_OBJ_FLAG_HIDDEN);
+      - script.execute: screen_dim
 
 lvgl:
   displays:
@@ -1014,3 +1040,21 @@ lvgl:
                         text: "Fan Only"
                         text_font: montserrat_18
                         text_color: 0xDDDDDD
+
+        # ── Screen-dim intercept layer ─────────────────────────────────────────
+        # Sits above all other widgets (declared last = topmost z-order).
+        # Shown when the screen dims; absorbs the first tap so it only wakes
+        # the display without triggering any underlying UI action.
+        - obj:
+            id: dim_backdrop
+            hidden: true
+            x: 0
+            y: 0
+            width: 450
+            height: 600
+            bg_opa: transp
+            border_width: 0
+            pad_all: 0
+            on_click:
+              then:
+                - script.execute: screen_wake

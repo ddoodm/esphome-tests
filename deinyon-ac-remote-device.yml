@@ -170,6 +170,9 @@ touchscreen:
     id: my_touchscreen
     display: my_display
     reset_pin: 3
+    on_touch:
+      then:
+        - script.execute: screen_dim
 
 # Extended IO expander (TCA9554 = compatible with PCA9554 driver)
 pca9554:
