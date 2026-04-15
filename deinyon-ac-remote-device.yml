@@ -1,6 +1,9 @@
+substitutions:
+  ac_entity_id: climate.actron_test_aircon
+
 esphome:
-  name: deinyon-climate
-  friendly_name: Deinyon Climate
+  name: deinyon-ac-remote
+  friendly_name: Deinyon AC Remote
 
 packages:
   ui: !include deinyon-ac-remote-ui.yml
@@ -39,6 +42,97 @@ sensor:
     name: "WiFi Signal Strength"
     id: wifi_signal_db
     update_interval: 5s
+
+  # ── HA climate state ────────────────────────────────────────────────────────
+  - platform: homeassistant
+    entity_id: ${ac_entity_id}
+    attribute: temperature
+    id: ha_setpoint
+    on_value:
+      then:
+        - lambda: |-
+            if (std::isnan(x)) return;
+            float range = id(g_temp_max) - id(g_temp_min);
+            if (range <= 0.0f) return;
+            id(g_setpoint) = x;
+            int arc_val = (int)((x - id(g_temp_min)) / range * 100.0f);
+            arc_val = std::max(0, std::min(100, arc_val));
+            id(g_setpoint_arc) = arc_val;
+            lv_arc_set_value(id(arc_track), arc_val);
+            lv_arc_set_value(id(arc_setpoint), arc_val);
+        - script.execute: render_setpoint_label
+        - script.execute: update_diff_arc
+
+  - platform: homeassistant
+    entity_id: ${ac_entity_id}
+    attribute: current_temperature
+    id: ha_current_temp
+    on_value:
+      then:
+        - lambda: |-
+            if (std::isnan(x)) return;
+            float range = id(g_temp_max) - id(g_temp_min);
+            if (range <= 0.0f) return;
+            int arc_val = (int)((x - id(g_temp_min)) / range * 100.0f);
+            arc_val = std::max(0, std::min(100, arc_val));
+            id(g_current_arc) = arc_val;
+            lv_arc_set_value(id(arc_current), arc_val);
+        - script.execute: update_diff_arc
+
+  - platform: homeassistant
+    entity_id: ${ac_entity_id}
+    attribute: min_temp
+    id: ha_min_temp
+    on_value:
+      then:
+        - lambda: 'if (!std::isnan(x)) id(g_temp_min) = x;'
+
+  - platform: homeassistant
+    entity_id: ${ac_entity_id}
+    attribute: max_temp
+    id: ha_max_temp
+    on_value:
+      then:
+        - lambda: 'if (!std::isnan(x)) id(g_temp_max) = x;'
+
+text_sensor:
+  # State of the climate entity IS the hvac_mode ("off"/"cool"/"heat"/"heat_cool"/"fan_only")
+  - platform: homeassistant
+    entity_id: ${ac_entity_id}
+    id: ha_hvac_mode
+    on_value:
+      then:
+        - lambda: |-
+            int mode = 0;
+            if      (x == "cool")      { mode = 1; lv_label_set_text(id(icon_mode), "\U000F0717"); }
+            else if (x == "heat")      { mode = 2; lv_label_set_text(id(icon_mode), "\U000F0238"); }
+            else if (x == "heat_cool") { mode = 3; lv_label_set_text(id(icon_mode), "\U000F0453"); }
+            else if (x == "fan_only")  { mode = 4; lv_label_set_text(id(icon_mode), "\U000F0210"); }
+            // "off": leave icon_mode glyph unchanged (shows last active mode)
+            id(g_mode) = mode;
+            if (mode != 0) id(g_prev_mode) = mode;
+        - script.execute: apply_mode_style
+
+  - platform: homeassistant
+    entity_id: ${ac_entity_id}
+    attribute: fan_mode
+    id: ha_fan_mode
+    on_value:
+      then:
+        - lambda: |-
+            if (x == "auto") {
+              id(g_fan_auto) = true;
+              lv_label_set_text(id(icon_fan), "\U000F0210");
+            } else {
+              id(g_fan_auto) = false;
+              if      (x == "low")    lv_label_set_text(id(icon_fan), "\U000F0BAF");
+              else if (x == "medium") lv_label_set_text(id(icon_fan), "\U000F0BB0");
+              else if (x == "high")   lv_label_set_text(id(icon_fan), "\U000F0BB1");
+            }
+            lv_color_t col      = id(g_fan_auto) ? lv_color_hex(id(g_accent_hex)) : lv_color_hex(0x2E2E2E);
+            lv_color_t icon_col = id(g_fan_auto) ? lv_color_hex(id(g_accent_hex)) : lv_color_hex(0x777777);
+            lv_obj_set_style_border_color(id(btn_fan_auto), col,      LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(id(icon_fan_auto),  icon_col, LV_STATE_DEFAULT);
 
 # Quad SPI bus for display
 spi:
