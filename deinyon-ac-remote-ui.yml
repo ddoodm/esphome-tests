@@ -1,5 +1,5 @@
-# deinyon-climate-ui3.yml
-# V3 — Portrait arc, dark theme, 450×600
+# deinyon-ac-remote-ui.yml
+# Portrait arc, dark theme, 450×600
 # Requires: display id my_display, touchscreen (any platform)
 # Device must be in portrait orientation (no rotation: 270°)
 #

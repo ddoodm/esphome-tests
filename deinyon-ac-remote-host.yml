@@ -2,7 +2,7 @@ esphome:
   name: deinyon-climate-host
 
 packages:
-  ui: !include deinyon-climate-ui3.yml
+  ui: !include deinyon-ac-remote-ui.yml
 
 host:
 
