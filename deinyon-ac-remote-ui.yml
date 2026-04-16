@@ -41,6 +41,7 @@ esphome:
             lv_obj_add_style(_btns[i], &_s_pressed, LV_STATE_PRESSED);
           }
       - script.execute: apply_mode_style
+      - script.execute: render_action_style
       - script.execute: screen_dim
 
 globals:
@@ -79,6 +80,10 @@ globals:
   - id: g_current_temp
     type: float
     initial_value: 'NAN'
+  # 0=idle/off  1=cooling  2=heating
+  - id: g_hvac_action
+    type: int
+    initial_value: '0'
 
 font:
   - file: "gfonts://Roboto"
@@ -244,6 +249,27 @@ script:
           lv_obj_set_style_text_color(id(icon_fan_pop_med),  popup_col, LV_STATE_DEFAULT);
           lv_obj_set_style_text_color(id(icon_fan_pop_high), popup_col, LV_STATE_DEFAULT);
 
+  # Updates the action status label and gradient backdrop.
+  # Call whenever g_hvac_action changes.
+  - id: render_action_style
+    then:
+      - lambda: |-
+          if (id(g_hvac_action) == 1) {
+            lv_label_set_text(id(action_label), "Cooling");
+            lv_obj_set_style_text_color(id(action_label), lv_color_hex(0x33AAFF), LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_grad_color(id(action_gradient), lv_color_hex(0x001A40), LV_STATE_DEFAULT);
+            lv_obj_clear_flag(id(action_gradient), LV_OBJ_FLAG_HIDDEN);
+          } else if (id(g_hvac_action) == 2) {
+            lv_label_set_text(id(action_label), "Heating");
+            lv_obj_set_style_text_color(id(action_label), lv_color_hex(0xFF6622), LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_grad_color(id(action_gradient), lv_color_hex(0x3D1400), LV_STATE_DEFAULT);
+            lv_obj_clear_flag(id(action_gradient), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_label_set_text(id(action_label), "Idle");
+            lv_obj_set_style_text_color(id(action_label), lv_color_hex(0x555555), LV_STATE_DEFAULT);
+            lv_obj_add_flag(id(action_gradient), LV_OBJ_FLAG_HIDDEN);
+          }
+
   # Idle screen-dim timer — restart on any user activity.
   # Short delay for testing; increase to e.g. 60s for production.
   - id: screen_dim
@@ -277,6 +303,24 @@ lvgl:
     - id: main_page
       bg_color: 0x000000
       widgets:
+
+        # ── Action gradient backdrop ──────────────────────────────────────────
+        # Full-screen gradient: black at mid-screen fading to accent at bottom.
+        # Declared first so it sits behind all other widgets.
+        # Shown only when actually cooling or heating; hidden when idle/off.
+        - obj:
+            id: action_gradient
+            hidden: true
+            x: 0
+            y: 300
+            width: 450
+            height: 300
+            bg_color: 0x000000
+            bg_grad_color: 0x001A40
+            bg_grad_dir: VER
+            border_width: 0
+            pad_all: 0
+            clickable: false
 
         # ── Top button row ─────────────────────────────────────────────────────
         # Fan speed button (top-left, x=15) — icon shows selected speed; always neutral (no active state)
@@ -454,6 +498,18 @@ lvgl:
                     border_width: 0
                     border_opa: transp
                     pad_all: -8
+
+              # Action status label — centered above the setpoint number.
+              # "Cooling" (blue) / "Heating" (amber) / "Idle" (grey).
+              # clickable: false so touches pass through to arc_setpoint.
+              - label:
+                  id: action_label
+                  align: CENTER
+                  y: -80
+                  text: "Idle"
+                  text_color: 0x555555
+                  text_font: montserrat_24
+                  clickable: false
 
               # Temperature label — centered inside the arc.
               # Fixed size so the container never clips wider text (e.g. "24.0").

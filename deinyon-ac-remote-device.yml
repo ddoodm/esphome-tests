@@ -117,6 +117,18 @@ text_sensor:
 
   - platform: homeassistant
     entity_id: ${ac_entity_id}
+    attribute: hvac_action
+    id: ha_hvac_action
+    on_value:
+      then:
+        - lambda: |-
+            if      (x == "cooling") { id(g_hvac_action) = 1; }
+            else if (x == "heating") { id(g_hvac_action) = 2; }
+            else                     { id(g_hvac_action) = 0; }
+        - script.execute: render_action_style
+
+  - platform: homeassistant
+    entity_id: ${ac_entity_id}
     attribute: fan_mode
     id: ha_fan_mode
     on_value:
