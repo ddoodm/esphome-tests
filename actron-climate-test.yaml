@@ -1,3 +1,8 @@
+substitutions:
+  sensor_desk:     '0'
+  sensor_bedroom:  '1'
+  sensor_average:  '2'
+
 esphome:
   name: actron-test
 
@@ -28,15 +33,81 @@ remote_transmitter:
 
 sensor:
   - platform: homeassistant
-    id: room_temp
+    id: desk_temp
     entity_id: sensor.desk_temp_sensor_atc_a199_temperature
     accuracy_decimals: 2
+    on_value:
+      then:
+        - script.execute:
+            id: maybe_update_active_temp
+            sensor_index: ${sensor_desk}
+
+  - platform: homeassistant
+    id: bedroom_temp
+    entity_id: sensor.bedroom_temp_sensor_atc_dd1b_temperature
+    accuracy_decimals: 2
+    on_value:
+      then:
+        - script.execute:
+            id: maybe_update_active_temp
+            sensor_index: ${sensor_bedroom}
+
+  - platform: template
+    id: active_temp
+    lambda: |-
+      if (id(active_sensor_idx) == ${sensor_desk})    return id(desk_temp).state;
+      if (id(active_sensor_idx) == ${sensor_bedroom}) return id(bedroom_temp).state;
+      // Average: sum only sensors with a valid (non-NaN) reading
+      float sum = 0; int count = 0;
+      auto add = [&](float v) { if (!isnan(v)) { sum += v; count++; } };
+      add(id(desk_temp).state);
+      add(id(bedroom_temp).state);
+      if (count == 0) return NAN;
+      return sum / count;
+    update_interval: never
+
+globals:
+  - id: active_sensor_idx
+    type: int
+    restore_value: true
+    initial_value: ${sensor_desk}
+
+script:
+  - id: maybe_update_active_temp
+    parameters:
+      sensor_index: int
+    then:
+      - if:
+          condition:
+            lambda: 'return id(active_sensor_idx) == sensor_index || id(active_sensor_idx) == ${sensor_average};'
+          then:
+            - component.update: active_temp
+
+select:
+  - platform: template
+    name: "Thermostat Sensor"
+    id: thermostat_sensor_select
+    optimistic: true
+    restore_value: true
+    options:
+      - "Desk"
+      - "Bedroom"
+      - "Average"
+    initial_option: "Desk"
+    set_action:
+      - globals.set:
+          id: active_sensor_idx
+          value: !lambda |-
+            if (x == "Desk")    return ${sensor_desk};
+            if (x == "Bedroom") return ${sensor_bedroom};
+            return ${sensor_average};
+      - component.update: active_temp
 
 climate:
   - platform: actron_b812
     name: "Aircon"
     transmitter_id: ac_tx
-    temperature_sensor_id: room_temp
+    temperature_sensor_id: active_temp
     hysteresis: 0.2         # degrees C, optional — defaults to 0.5
     auto_deadband: 1.0       # degrees C, the gap between heating and cooling in HEAT_COOL mode
     auto_deadband_timeout: 20min  # deadband expires after this long idle; allows response to slow drift
