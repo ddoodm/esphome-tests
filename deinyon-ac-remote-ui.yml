@@ -80,7 +80,7 @@ globals:
   - id: g_current_temp
     type: float
     initial_value: 'NAN'
-  # 0=idle/off  1=cooling  2=heating
+  # 0=idle/off  1=cooling  2=heating  3=fan
   - id: g_hvac_action
     type: int
     initial_value: '0'
@@ -263,6 +263,11 @@ script:
             lv_label_set_text(id(action_label), "Heating");
             lv_obj_set_style_text_color(id(action_label), lv_color_hex(0xFF6622), LV_STATE_DEFAULT);
             lv_obj_set_style_bg_grad_color(id(action_gradient), lv_color_hex(0x3D1400), LV_STATE_DEFAULT);
+            lv_obj_clear_flag(id(action_gradient), LV_OBJ_FLAG_HIDDEN);
+          } else if (id(g_hvac_action) == 3) {
+            lv_label_set_text(id(action_label), "Fan");
+            lv_obj_set_style_text_color(id(action_label), lv_color_hex(0x00D9A3), LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_grad_color(id(action_gradient), lv_color_hex(0x003828), LV_STATE_DEFAULT);
             lv_obj_clear_flag(id(action_gradient), LV_OBJ_FLAG_HIDDEN);
           } else {
             lv_label_set_text(id(action_label), "Idle");
