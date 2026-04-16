@@ -73,11 +73,13 @@ sensor:
             if (std::isnan(x)) return;
             float range = id(g_temp_max) - id(g_temp_min);
             if (range <= 0.0f) return;
+            id(g_current_temp) = x;
             int arc_val = (int)((x - id(g_temp_min)) / range * 100.0f);
             arc_val = std::max(0, std::min(100, arc_val));
             id(g_current_arc) = arc_val;
             lv_arc_set_value(id(arc_current), arc_val);
         - script.execute: update_diff_arc
+        - script.execute: render_current_label
 
   - platform: homeassistant
     entity_id: ${ac_entity_id}

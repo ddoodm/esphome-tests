@@ -1,10 +1,15 @@
+substitutions:
+  ac_entity_id: climate.actron_test_aircon
+
 esphome:
-  name: deinyon-climate-host
+  name: deinyon-ac-remote-host
 
 packages:
   ui: !include deinyon-ac-remote-ui.yml
 
 host:
+
+api:
 
 display:
   - platform: sdl

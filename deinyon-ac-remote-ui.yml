@@ -76,6 +76,9 @@ globals:
   - id: g_dimmed
     type: bool
     initial_value: 'false'
+  - id: g_current_temp
+    type: float
+    initial_value: 'NAN'
 
 font:
   - file: "gfonts://Roboto"
@@ -86,6 +89,10 @@ font:
     id: roboto_32
     size: 32
     glyphs: "°C"
+  - file: "gfonts://Roboto"
+    id: roboto_24
+    size: 24
+    glyphs: "0123456789.-°C"
   - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
     id: mdi_36
     size: 36
@@ -117,6 +124,17 @@ script:
             char buf[8];
             snprintf(buf, sizeof(buf), "%.1f", id(g_setpoint));
             lv_label_set_text(id(temp_label), buf);
+          }
+
+  - id: render_current_label
+    then:
+      - lambda: |-
+          if (std::isnan(id(g_current_temp))) {
+            lv_label_set_text(id(current_label), "--");
+          } else {
+            char buf[12];
+            snprintf(buf, sizeof(buf), "%.1f\xC2\xB0""C", id(g_current_temp));
+            lv_label_set_text(id(current_label), buf);
           }
 
   # Recalculates the diff arc segment (current temp → setpoint gap).
@@ -234,7 +252,9 @@ script:
       - delay: 10s
       - lambda: |-
           id(g_dimmed) = true;
+          #ifndef USE_HOST
           id(my_display).set_brightness(8);
+          #endif
           lv_obj_clear_flag(id(dim_backdrop), LV_OBJ_FLAG_HIDDEN);
 
   # Wake the screen: restore brightness and hide the intercept layer.
@@ -244,7 +264,9 @@ script:
       - lambda: |-
           if (!id(g_dimmed)) return;
           id(g_dimmed) = false;
+          #ifndef USE_HOST
           id(my_display).set_brightness(255);
+          #endif
           lv_obj_add_flag(id(dim_backdrop), LV_OBJ_FLAG_HIDDEN);
       - script.execute: screen_dim
 
@@ -462,6 +484,17 @@ lvgl:
                         text_font: roboto_32
                         pad_bottom: 16
 
+              # Current temperature label — smaller, below the setpoint text.
+              # clickable: false lets touches pass through to arc_setpoint.
+              - label:
+                  id: current_label
+                  align: CENTER
+                  y: 78
+                  text: "--"
+                  text_color: 0x777777
+                  text_font: roboto_24
+                  clickable: false
+
               # Arc 4 — draggable setpoint knob (drawn last = topmost, absorbs all touch).
               # Transparent arc + invisible indicator; only the styled knob is rendered.
               # Knob border starts grey (off); apply_mode_style colours it on power-on.
@@ -503,6 +536,8 @@ lvgl:
                             lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
                           }
                       - script.execute: render_setpoint_label
+                  on_release:
+                    then:
                       - script.execute: debounce_setpoint
 
         # ── Bottom button row ──────────────────────────────────────────────────
@@ -737,6 +772,7 @@ lvgl:
                   radius: 0
                   bg_opa: transp
                   border_width: 0
+                  border_opa: transp
                   pad_all: 0
                   on_click:
                     then:
@@ -780,6 +816,7 @@ lvgl:
                   radius: 0
                   bg_opa: transp
                   border_width: 0
+                  border_opa: transp
                   pad_all: 0
                   on_click:
                     then:
@@ -823,6 +860,7 @@ lvgl:
                   radius: 0
                   bg_opa: transp
                   border_width: 0
+                  border_opa: transp
                   pad_all: 0
                   on_click:
                     then:
@@ -877,6 +915,7 @@ lvgl:
                   radius: 0
                   bg_opa: transp
                   border_width: 0
+                  border_opa: transp
                   pad_all: 0
                   on_click:
                     then:
@@ -922,6 +961,7 @@ lvgl:
                   radius: 0
                   bg_opa: transp
                   border_width: 0
+                  border_opa: transp
                   pad_all: 0
                   on_click:
                     then:
@@ -967,6 +1007,7 @@ lvgl:
                   radius: 0
                   bg_opa: transp
                   border_width: 0
+                  border_opa: transp
                   pad_all: 0
                   on_click:
                     then:
@@ -1012,6 +1053,7 @@ lvgl:
                   radius: 0
                   bg_opa: transp
                   border_width: 0
+                  border_opa: transp
                   pad_all: 0
                   on_click:
                     then:
