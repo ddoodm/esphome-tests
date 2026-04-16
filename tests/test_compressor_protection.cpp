@@ -359,6 +359,184 @@ TEST_CASE("Regression: switching COOL->HEAT does not start cooling", "[regressio
   h.check_invariants();
 }
 
+TEST_CASE("Regression: setpoint change after mode switch bypasses valve settle",
+          "[regression]") {
+  // Exact scenario from production logs 2026-04-15:
+  //   13:48:57 — mode HEAT→COOL while temp (23.7) was below engage threshold
+  //             (target 23.5 + hysteresis 0.5 = 24.0).  Thermostat stayed idle,
+  //             Branch A cleared the HEAT bit WITHOUT arming the valve timer.
+  //   13:48:58 — setpoint lowered to 23.0, making 23.7 > 23.5 engage threshold.
+  //             Compressor started 1.3 s after the valve switched — no settle.
+  Harness h;
+
+  // Phase 1: establish HEAT with compressor, then let thermostat go idle
+  h.climate.current_temperature = 19.0f;
+  h.set_mode(climate::CLIMATE_MODE_HEAT);
+  h.run_for(2000);
+  REQUIRE(h.climate.comp_running_);
+
+  h.set_temperature(23.7f);
+  h.climate.target_temperature = 23.5f;
+  h.tick();
+  REQUIRE_FALSE(h.climate.comp_running_);
+
+  // Let cooldown + idle period pass, valve stays energised (keep_heat)
+  h.run_for(COOLDOWN_MS + 5000);
+  REQUIRE((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+  // Phase 2: switch to COOL — but temp 23.7 < 23.5+0.5 = 24.0, so thermostat
+  // does NOT engage.  Branch A runs with keep_heat=false, clearing HEAT.
+  h.frames.clear();
+  h.set_mode(climate::CLIMATE_MODE_COOL);
+  h.tick();
+  CHECK((h.climate.active_cmd_ & BIT_HEAT) == 0);   // valve switched
+  CHECK_FALSE(h.climate.comp_running_);              // comp still off
+  CHECK(h.climate.valve_timer_armed_);               // settle timer MUST be armed
+
+  // Phase 3: ~1 second later, lower the setpoint so thermostat engages
+  h.run_for(1000);
+  h.climate.target_temperature = 23.0f;
+  h.set_mode(climate::CLIMATE_MODE_COOL);  // re-send mode to trigger evaluate
+  h.tick();
+
+  // Compressor must NOT have started yet — valve hasn't settled
+  CHECK_FALSE(h.climate.comp_running_);
+
+  // After settle elapses, compressor starts
+  h.run_for(SETTLE_MS + 2000);
+  REQUIRE(h.climate.comp_running_);
+  REQUIRE((h.climate.active_cmd_ & BIT_HEAT) == 0);
+
+  h.check_invariants();
+}
+
+TEST_CASE("HEAT->OFF->COOL quick succession: valve settle carries through",
+          "[protection]") {
+  // Valve settle is armed in Branch A when going HEAT→OFF (keep_heat=false).
+  // If the user then quickly switches OFF→COOL, the settle timer from the
+  // HEAT→OFF event must still block the compressor.
+  Harness h;
+
+  // Heat until thermostat is satisfied, then idle with valve held
+  h.climate.current_temperature = 19.0f;
+  h.set_mode(climate::CLIMATE_MODE_HEAT);
+  h.run_for(2000);
+  REQUIRE(h.climate.comp_running_);
+  h.set_temperature(23.0f);
+  h.tick();
+  h.run_for(COOLDOWN_MS + 5000);
+  REQUIRE((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+  // Switch to OFF — Branch A clears HEAT, arms valve timer
+  h.frames.clear();
+  h.set_mode(climate::CLIMATE_MODE_OFF);
+  h.tick();
+  CHECK((h.climate.active_cmd_ & BIT_HEAT) == 0);
+  CHECK(h.climate.valve_timer_armed_);
+
+  // Immediately switch to COOL — valve timer must still be armed
+  h.climate.current_temperature = 25.0f;
+  h.set_mode(climate::CLIMATE_MODE_COOL);
+  h.tick();
+  CHECK_FALSE(h.climate.comp_running_);
+  CHECK(h.climate.valve_timer_armed_);
+
+  // Comp must stay off during settle
+  h.run_for(SETTLE_MS - 2000);
+  CHECK_FALSE(h.climate.comp_running_);
+
+  // After settle, comp starts
+  h.run_for(5000);
+  REQUIRE(h.climate.comp_running_);
+
+  h.check_invariants();
+}
+
+TEST_CASE("HEAT->COOL during cooldown then setpoint change: both timers enforced",
+          "[protection]") {
+  // When switching HEAT→COOL while the compressor is still in cooldown, the
+  // HEAT bit is held during cooldown (correctly), then cleared after cooldown
+  // with the valve timer armed (the fix).  A setpoint change should then wait
+  // for the valve settle on top of the already-elapsed cooldown.
+  Harness h;
+
+  h.climate.current_temperature = 19.0f;
+  h.set_mode(climate::CLIMATE_MODE_HEAT);
+  h.run_for(2000);
+  REQUIRE(h.climate.comp_running_);
+
+  // Switch to COOL while comp just stopped (during cooldown).
+  // Temp 23.7 < target 23.5 + hysteresis 0.5 = 24.0, so thermostat stays idle.
+  h.climate.current_temperature = 23.7f;
+  h.climate.target_temperature = 23.5f;
+  h.set_mode(climate::CLIMATE_MODE_COOL);
+  h.tick();
+  REQUIRE_FALSE(h.climate.comp_running_);
+
+  // During cooldown the HEAT bit should stay held
+  h.run_for(COOLDOWN_MS - 2000);
+  CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+  // Just past cooldown: HEAT clears and valve timer arms
+  h.run_for(5000);
+  CHECK((h.climate.active_cmd_ & BIT_HEAT) == 0);
+  CHECK(h.climate.valve_timer_armed_);
+
+  // Immediately lower setpoint so thermostat engages — comp must wait for settle.
+  // A few seconds have elapsed since the valve switched (between the cooldown
+  // elapsing and this point), so check at a time clearly within the 30 s window.
+  h.frames.clear();
+  h.climate.target_temperature = 23.0f;
+  h.set_mode(climate::CLIMATE_MODE_COOL);
+  h.tick();
+  CHECK_FALSE(h.climate.comp_running_);
+
+  h.run_for(SETTLE_MS / 2);
+  CHECK_FALSE(h.climate.comp_running_);
+
+  h.run_for(SETTLE_MS);
+  REQUIRE(h.climate.comp_running_);
+
+  h.check_invariants();
+}
+
+TEST_CASE("HEAT->COOL->HEAT during cooldown: valve stays, no settle needed",
+          "[protection]") {
+  // If the user switches HEAT→COOL→HEAT while still in cooldown, the valve
+  // never actually switches (HEAT held during cooldown, then keep_heat=true
+  // when back in HEAT mode).  No valve settle should be needed.
+  Harness h;
+
+  h.climate.current_temperature = 19.0f;
+  h.set_mode(climate::CLIMATE_MODE_HEAT);
+  h.run_for(2000);
+  REQUIRE(h.climate.comp_running_);
+
+  // Stop comp, go idle
+  h.set_temperature(23.0f);
+  h.tick();
+  REQUIRE_FALSE(h.climate.comp_running_);
+
+  // Switch to COOL during cooldown — HEAT held
+  h.set_mode(climate::CLIMATE_MODE_COOL);
+  h.run_for(1000);
+  CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+  // Switch back to HEAT — valve should never have moved
+  h.climate.current_temperature = 19.0f;
+  h.set_mode(climate::CLIMATE_MODE_HEAT);
+
+  // After cooldown elapses, comp should restart in HEAT with NO valve settle
+  // (valve was held the entire time — keep_heat=true for HEAT mode)
+  h.run_for(COOLDOWN_MS + 5000);
+  REQUIRE(h.climate.comp_running_);
+  REQUIRE((h.climate.active_cmd_ & BIT_HEAT) != 0);
+  // Valve timer should never have been armed — valve never switched
+  CHECK_FALSE(h.climate.valve_timer_armed_);
+
+  h.check_invariants();
+}
+
 // ---------------------------------------------------------------------------
 // Cycle statistics — counts compressor starts, valve switches, and measures
 // minimum intervals across a frame history.
@@ -609,6 +787,188 @@ TEST_CASE("User spamming HEAT/COOL 20 times", "[cycling]") {
     CHECK(stats.min_comp_off_ms >= COOLDOWN_MS);
 
   h.check_invariants();
+}
+
+TEST_CASE("Long idle in HEAT then switch to COOL: valve settle respected", "[protection]") {
+  Harness h;
+
+  // Phase 1: heat until thermostat is satisfied
+  h.climate.current_temperature = 19.0f;
+  h.set_mode(climate::CLIMATE_MODE_HEAT);
+  h.run_for(2000);
+  REQUIRE(h.climate.comp_running_);
+  REQUIRE((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+  // Thermostat goes idle (temp reached target)
+  h.set_temperature(23.0f);
+  h.tick();
+  REQUIRE_FALSE(h.climate.comp_running_);
+
+  // Let cooldown elapse — valve should stay energised (keep_heat)
+  h.run_for(COOLDOWN_MS + 5000);
+  REQUIRE((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+  // Idle for ~1 hour (advance time without generating thousands of frames)
+  s_fake_millis += 60 * 60 * 1000;
+  h.tick();
+  REQUIRE((h.climate.active_cmd_ & BIT_HEAT) != 0);
+  REQUIRE_FALSE(h.climate.comp_running_);
+
+  // Phase 2: switch to COOL
+  h.climate.current_temperature = 25.0f;
+  h.frames.clear();
+  h.set_mode(climate::CLIMATE_MODE_COOL);
+
+  // First tick: Step 3 should clear HEAT and arm valve timer
+  h.tick();
+  CHECK((h.climate.active_cmd_ & BIT_HEAT) == 0);  // valve switched
+  CHECK_FALSE(h.climate.comp_running_);             // comp must NOT start yet
+  CHECK(h.climate.valve_timer_armed_);              // settle timer armed
+
+  // During settle period the compressor must stay off
+  h.run_for(SETTLE_MS - 2000);
+  CHECK_FALSE(h.climate.comp_running_);
+
+  // After settle elapses, compressor starts
+  h.run_for(5000);
+  REQUIRE(h.climate.comp_running_);
+  REQUIRE((h.climate.active_cmd_ & BIT_HEAT) == 0);
+
+  // Verify timing from frame history
+  uint32_t heat_off_time = 0;
+  uint32_t comp_start_time = 0;
+  bool prev_heat = true;
+  bool prev_comp = false;
+  for (auto &f : h.frames) {
+    bool heat = (f.cmd & BIT_HEAT) != 0;
+    if (prev_heat && !heat)
+      heat_off_time = f.time_ms;
+    if (!prev_comp && f.comp_running)
+      comp_start_time = f.time_ms;
+    prev_heat = heat;
+    prev_comp = f.comp_running;
+  }
+  REQUIRE(heat_off_time > 0);
+  REQUIRE(comp_start_time > 0);
+  uint32_t gap = comp_start_time - heat_off_time;
+  INFO("valve off at " << heat_off_time << "ms, comp on at "
+        << comp_start_time << "ms, gap=" << gap << "ms");
+  CHECK(gap >= SETTLE_MS);
+
+  h.check_invariants();
+}
+
+TEST_CASE("Valve never switches within cooldown of comp stop", "[protection]") {
+  // Stress test: the comp stops and the mode changes in quick succession.
+  // In each scenario the HEAT bit must not change until cooldown_ms after
+  // the compressor stopped.  This tests the Branch A cooldown hold (line 123)
+  // and the Step 1→2→3 sequence.
+  Harness h;
+
+  SECTION("HEAT mode comp stops, immediate switch to OFF") {
+    h.climate.current_temperature = 19.0f;
+    h.set_mode(climate::CLIMATE_MODE_HEAT);
+    h.run_for(2000);
+    REQUIRE(h.climate.comp_running_);
+    REQUIRE((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+    // Switch OFF on the very next tick after comp is running
+    h.set_mode(climate::CLIMATE_MODE_OFF);
+    h.tick();
+    // Comp stopped THIS tick — HEAT must still be set
+    CHECK_FALSE(h.climate.comp_running_);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+    // HEAT must stay set for the entire cooldown
+    for (uint32_t elapsed = 0; elapsed + 5000 < COOLDOWN_MS; elapsed += 5000) {
+      h.run_for(5000);
+      INFO("elapsed=" << elapsed + 5000 << "ms after comp stop");
+      CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+    }
+
+    // After cooldown, HEAT clears
+    h.run_for(10000);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) == 0);
+
+    h.check_invariants();
+  }
+
+  SECTION("HEAT mode comp stops, immediate switch to COOL") {
+    h.climate.current_temperature = 19.0f;
+    h.set_mode(climate::CLIMATE_MODE_HEAT);
+    h.run_for(2000);
+    REQUIRE(h.climate.comp_running_);
+
+    h.climate.current_temperature = 25.0f;
+    h.set_mode(climate::CLIMATE_MODE_COOL);
+    h.tick();
+    CHECK_FALSE(h.climate.comp_running_);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+    h.run_for(COOLDOWN_MS - 2000);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+    h.run_for(5000);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) == 0);
+
+    h.check_invariants();
+  }
+
+  SECTION("HEAT mode comp stops, immediate switch to FAN_ONLY") {
+    h.climate.current_temperature = 19.0f;
+    h.set_mode(climate::CLIMATE_MODE_HEAT);
+    h.run_for(2000);
+    REQUIRE(h.climate.comp_running_);
+
+    h.set_mode(climate::CLIMATE_MODE_FAN_ONLY);
+    h.tick();
+    CHECK_FALSE(h.climate.comp_running_);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+    h.run_for(COOLDOWN_MS - 2000);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+    h.run_for(5000);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) == 0);
+
+    h.check_invariants();
+  }
+
+  SECTION("HEAT comp running, rapid OFF->COOL->OFF->COOL during cooldown") {
+    h.climate.current_temperature = 19.0f;
+    h.set_mode(climate::CLIMATE_MODE_HEAT);
+    h.run_for(2000);
+    REQUIRE(h.climate.comp_running_);
+
+    // Rapid mode changes during cooldown — HEAT must be held through all of them
+    h.set_mode(climate::CLIMATE_MODE_OFF);
+    h.run_for(1000);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+    h.climate.current_temperature = 25.0f;
+    h.set_mode(climate::CLIMATE_MODE_COOL);
+    h.run_for(1000);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+    h.set_mode(climate::CLIMATE_MODE_OFF);
+    h.run_for(1000);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+    h.climate.current_temperature = 25.0f;
+    h.set_mode(climate::CLIMATE_MODE_COOL);
+    h.run_for(1000);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+    // Still in cooldown — HEAT must be held
+    h.run_for(COOLDOWN_MS - 10000);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) != 0);
+
+    // After cooldown, HEAT clears
+    h.run_for(10000);
+    CHECK((h.climate.active_cmd_ & BIT_HEAT) == 0);
+
+    h.check_invariants();
+  }
 }
 
 TEST_CASE("Rapid mode cycling respects all protections", "[protection]") {

@@ -132,6 +132,15 @@ void ActronB812Climate::update() {
         bool keep_heat = (active_cmd_ & BIT_HEAT) &&
                          (pending_mode_ == climate::CLIMATE_MODE_HEAT ||
                           pending_mode_ == climate::CLIMATE_MODE_HEAT_COOL);
+        // When the HEAT bit is actually being cleared here, the reversing valve is
+        // physically switching.  Arm the settle timer so that if a future setpoint
+        // or mode change makes the compressor desired, Step 4 will block until the
+        // valve has had time to move.
+        if ((active_cmd_ & BIT_HEAT) && !keep_heat) {
+          valve_switch_time_ = millis();
+          valve_timer_armed_ = true;
+          ESP_LOGD(TAG, "Reversing valve switched — settle timer armed");
+        }
         active_cmd_ = keep_heat ? (desired | BIT_HEAT) : desired;
         pending_change_ = false;
         ESP_LOGD(TAG, "Applying command 0x%02X%s", active_cmd_,
