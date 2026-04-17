@@ -18,6 +18,9 @@ esp32:
     type: esp-idf
 
 api:
+time:
+  - platform: homeassistant
+    id: ha_time
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
@@ -113,6 +116,7 @@ climate:
     auto_deadband_timeout: 20min  # deadband expires after this long idle; allows response to slow drift
     compressor_cooldown: 4min
     valve_settle_time: 40s
+    time_id: ha_time
     compressor_running:
       name: "Aircon Compressor Running"
     state:
@@ -122,14 +126,14 @@ climate:
     #       - text_sensor.template.publish:
     #           id: ac_state_mirror
     #           state: !lambda 'return x;'
-    timer_remaining:
-      name: "Aircon Timer Remaining"
+    protection_expires_at:
+      name: "Aircon Protection Expires At"
     thermostat_direction:
       name: "Aircon Thermostat Direction"
     deadband_active:
       name: "Aircon Deadband Active"
-    deadband_expires_in:
-      name: "Aircon Deadband Expires In"
+    deadband_expires_at:
+      name: "Aircon Deadband Expires At"
     reversing_valve:
       name: "Aircon Reversing Valve"
     call_active:

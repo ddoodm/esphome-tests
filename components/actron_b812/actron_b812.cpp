@@ -113,6 +113,7 @@ void ActronB812Climate::update() {
     if (!comp_desired) {
       if (comp_running_) {
         comp_off_time_ = millis();
+        comp_off_epoch_ = epoch_now_();
         comp_timer_armed_ = true;
         comp_running_ = false;
         ESP_LOGD(TAG, "Compressor stopped, cooldown armed");
@@ -138,6 +139,7 @@ void ActronB812Climate::update() {
         // valve has had time to move.
         if ((active_cmd_ & BIT_HEAT) && !keep_heat) {
           valve_switch_time_ = millis();
+          valve_switch_epoch_ = epoch_now_();
           valve_timer_armed_ = true;
           ESP_LOGD(TAG, "Reversing valve switched — settle timer armed");
         }
@@ -152,6 +154,7 @@ void ActronB812Climate::update() {
       active_cmd_ = (active_cmd_ & ~BIT_COMP) & ~BIT_CALL;
       comp_running_ = false;
       comp_off_time_ = millis();
+      comp_off_epoch_ = epoch_now_();
       comp_timer_armed_ = true;
       ESP_LOGW(TAG, "Heat direction change — stopping compressor first");
 
@@ -164,6 +167,7 @@ void ActronB812Climate::update() {
     } else if ((active_cmd_ & BIT_HEAT) && !(desired & BIT_HEAT) && !valve_timer_armed_) {
       active_cmd_ &= ~BIT_HEAT;
       valve_switch_time_ = millis();
+      valve_switch_epoch_ = epoch_now_();
       valve_timer_armed_ = true;
       ESP_LOGD(TAG, "Reversing valve switching to cool — waiting for valve to settle");
 
@@ -220,12 +224,34 @@ std::string ActronB812Climate::compute_state_() {
   return "off";
 }
 
-float ActronB812Climate::timer_remaining_s_() {
-  if (comp_timer_armed_ && !comp_cooldown_elapsed_())
-    return (comp_cooldown_ms_ - (millis() - comp_off_time_)) / 1000.0f;
-  if (valve_timer_armed_ && !valve_settled_())
-    return (valve_settle_ms_ - (millis() - valve_switch_time_)) / 1000.0f;
-  return 0.0f;
+static std::string format_iso8601_(int32_t epoch) {
+  if (epoch == 0) return "";
+  time_t ts = static_cast<time_t>(epoch);
+  struct tm tm_info;
+  gmtime_r(&ts, &tm_info);
+  char buf[26];
+  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S+00:00", &tm_info);
+  return buf;
+}
+
+int32_t ActronB812Climate::epoch_now_() {
+  if (!time_) return 0;
+  auto t = time_->now();
+  return t.is_valid() ? static_cast<int32_t>(t.timestamp) : 0;
+}
+
+int32_t ActronB812Climate::compute_protection_expires_at_() {
+  if (comp_timer_armed_ && !comp_cooldown_elapsed_() && comp_off_epoch_ != 0)
+    return comp_off_epoch_ + static_cast<int32_t>(comp_cooldown_ms_ / 1000);
+  if (valve_timer_armed_ && !valve_settled_() && valve_switch_epoch_ != 0)
+    return valve_switch_epoch_ + static_cast<int32_t>(valve_settle_ms_ / 1000);
+  return 0;
+}
+
+int32_t ActronB812Climate::compute_deadband_expires_at_() {
+  if (!deadband_active_() || auto_deadband_timeout_ms_ == 0 || deadband_idle_epoch_ == 0)
+    return 0;
+  return deadband_idle_epoch_ + static_cast<int32_t>(auto_deadband_timeout_ms_ / 1000);
 }
 
 std::string ActronB812Climate::compute_thermostat_direction_str_() {
@@ -242,12 +268,6 @@ bool ActronB812Climate::deadband_active_() {
   return (millis() - auto_deadband_idle_since_) < auto_deadband_timeout_ms_;
 }
 
-float ActronB812Climate::deadband_expires_in_s_() {
-  if (!deadband_active_() || auto_deadband_timeout_ms_ == 0) return 0.0f;
-  uint32_t elapsed = millis() - auto_deadband_idle_since_;
-  if (elapsed >= auto_deadband_timeout_ms_) return 0.0f;
-  return (auto_deadband_timeout_ms_ - elapsed) / 1000.0f;
-}
 
 void ActronB812Climate::publish_sensors_() {
   if (compressor_running_sensor_) {
@@ -266,11 +286,11 @@ void ActronB812Climate::publish_sensors_() {
     }
   }
 
-  if (timer_remaining_sensor_) {
-    int remaining_s = static_cast<int>(timer_remaining_s_());
-    if (remaining_s != timer_remaining_last_s_) {
-      timer_remaining_last_s_ = remaining_s;
-      timer_remaining_sensor_->publish_state(static_cast<float>(remaining_s));
+  if (protection_expires_at_sensor_) {
+    int32_t expires_at = compute_protection_expires_at_();
+    if (expires_at != protection_expires_at_last_) {
+      protection_expires_at_last_ = expires_at;
+      protection_expires_at_sensor_->publish_state(format_iso8601_(expires_at));
     }
   }
 
@@ -290,11 +310,11 @@ void ActronB812Climate::publish_sensors_() {
     }
   }
 
-  if (deadband_expires_in_sensor_) {
-    int expires_s = static_cast<int>(deadband_expires_in_s_());
-    if (expires_s != deadband_expires_in_last_s_) {
-      deadband_expires_in_last_s_ = expires_s;
-      deadband_expires_in_sensor_->publish_state(static_cast<float>(expires_s));
+  if (deadband_expires_at_sensor_) {
+    int32_t expires_at = compute_deadband_expires_at_();
+    if (expires_at != deadband_expires_at_last_) {
+      deadband_expires_at_last_ = expires_at;
+      deadband_expires_at_sensor_->publish_state(format_iso8601_(expires_at));
     }
   }
 
@@ -373,8 +393,10 @@ void ActronB812Climate::evaluate_thermostat_() {
   if (want != thermostat_direction_) {
     if (want != THERMO_OFF)
       auto_deadband_direction_ = want;
-    else
+    else {
       auto_deadband_idle_since_ = millis();
+      deadband_idle_epoch_ = epoch_now_();
+    }
     thermostat_direction_ = want;
     pending_change_ = true;
     ESP_LOGD(TAG, "Thermostat -> %s",
