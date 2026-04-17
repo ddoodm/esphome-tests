@@ -1,0 +1,311 @@
+# Waveshare ESP32-S3-Touch-LCD-4.3
+# Board: ESP32-S3-WROOM-1-N16R8 (16MB Flash, 8MB OPI PSRAM)
+# Display: 800×480 RGB IPS, ST7262-driven via parallel RGB bus
+# Touch: GT911 capacitive, I2C via GPIO8/9
+# IO Expander: CH422G at 0x24 (controls LCD reset, backlight enable, touch reset)
+# Refs:
+#   https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-4.3
+#   https://gist.github.com/itmaybeokay/bd5c7aa574e8ed517148cf9c4c267bdb
+#   https://github.com/lboue/ESPHome_Waveshare_ESP32-S3_Touch_4.3
+
+substitutions:
+  name: waveshare-touch-4-3
+  friendly_name: "Waveshare Touch 4.3"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  platformio_options:
+    # Required for OPI PSRAM support on ESP32-S3
+    build_flags: "-DBOARD_HAS_PSRAM"
+    board_build.arduino.memory_type: qio_opi
+    board_build.flash_mode: dio
+    # 8MB PSRAM accessible to Arduino stack
+    board_upload.maximum_ram_size: 524288
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  cpu_frequency: 240MHz
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      # 64KB data cache (helps with large display buffers in PSRAM)
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      # Allow PSRAM to cache flash instructions/rodata — improves LVGL frame rate
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      # 16MB flash
+      CONFIG_ESPTOOLPY_FLASHSIZE_16MB: "y"
+      CONFIG_ESPTOOLPY_FLASHMODE_QIO: "y"
+      # 80MHz flash — must match psram: speed: 80MHz (IDF asserts equality)
+      # ESPHome 2026.x blocks 120MHz in octal PSRAM mode, so 80MHz is the ceiling here
+      CONFIG_ESPTOOLPY_FLASHFREQ_80M: "y"
+      # Octal PSRAM mode
+      CONFIG_SPIRAM_MODE_OCT: "y"
+      # Remove 120MHz PSRAM flags — not usable via ESPHome psram component
+      # LVGL performance: use standard memcpy/memset and place hot functions in IRAM
+      CONFIG_LV_MEM_CUSTOM: "y"
+      CONFIG_LV_MEMCPY_MEMSET_STD: "y"
+      CONFIG_LV_ATTRIBUTE_FAST_MEM: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz  # ESPHome 2026.x does not support 120MHz in octal mode
+
+logger:
+  hardware_uart: UART0
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name}"
+
+captive_portal:
+
+# ─── I2C ─────────────────────────────────────────────────────────────────────
+# Shared bus for CH422G expander and GT911 touch controller.
+# Note: CH422G occupies 0x20–0x3F and 0x5D; don't attach other devices at those addrs.
+i2c:
+  id: bus_a
+  sda: GPIO8
+  scl: GPIO9
+  scan: true
+
+# ─── CH422G IO Expander ───────────────────────────────────────────────────────
+# Controls LCD_RST (IO3), LCD_BL/DISP (IO2), and CTP_RST (IO1)
+ch422g:
+  - id: ch422g_hub
+    # address field removed in ESPHome 2024.10+; 0x24 is used automatically
+
+# ─── Display ─────────────────────────────────────────────────────────────────
+# 800×480 parallel RGB panel. Pin mapping from Waveshare schematic.
+display:
+  - platform: rpi_dpi_rgb
+    id: my_display
+    auto_clear_enabled: false
+    update_interval: never
+    color_order: RGB
+    # 16MHz PCLK gives ~41fps at 800×480; reduce to 14MHz if you see glitches
+    pclk_frequency: 16MHz
+    dimensions:
+      width: 800
+      height: 480
+    # Sync/control pins
+    de_pin:
+      number: GPIO5
+    hsync_pin:
+      number: GPIO46
+      ignore_strapping_warning: true
+    vsync_pin:
+      number: GPIO3
+      ignore_strapping_warning: true
+    pclk_pin: GPIO7
+    pclk_inverted: false
+    # Reset and backlight-enable via CH422G
+    reset_pin:
+      ch422g: ch422g_hub
+      number: 3   # LCD_RST → CH422G IO3
+    enable_pin:
+      ch422g: ch422g_hub
+      number: 2   # LCD_BL/DISP → CH422G IO2
+    # Sync timing (tweak if display tears or glitches)
+    hsync_back_porch: 16
+    hsync_front_porch: 16
+    hsync_pulse_width: 8
+    vsync_back_porch: 16
+    vsync_front_porch: 16
+    vsync_pulse_width: 8
+    # RGB data pins (5 red, 5 blue, 6 green = RGB565)
+    data_pins:
+      red:
+        - 1    # R3
+        - 2    # R4
+        - 42   # R5
+        - 41   # R6
+        - 40   # R7
+      blue:
+        - 14   # B3
+        - 38   # B4
+        - 18   # B5
+        - 17   # B6
+        - 10   # B7
+      green:
+        - 39   # G2
+        - 0    # G3
+        - 45   # G4
+        - 48   # G5
+        - 47   # G6
+        - 21   # G7
+
+# ─── Touchscreen ─────────────────────────────────────────────────────────────
+# GT911 capacitive touch via I2C.
+# CTP_RST is wired to CH422G IO1 (not directly to ESP32), so we define it here
+# to ensure consistent I2C address selection (0x5D vs 0x14 depends on boot timing).
+touchscreen:
+  platform: gt911
+  id: my_touch
+  update_interval: 16ms
+  interrupt_pin: GPIO4
+  reset_pin:
+    ch422g: ch422g_hub
+    number: 1   # CTP_RST → CH422G IO1
+    mode: OUTPUT
+  on_touch:
+    - lambda: |-
+        ESP_LOGI("touch", "x=%d y=%d", touch.x, touch.y);
+
+# ─── Fonts ───────────────────────────────────────────────────────────────────
+font:
+  - file: "gfonts://Roboto"
+    id: font_title
+    size: 48
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_body
+    size: 24
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 16
+    bpp: 4
+
+# ─── Diagnostics ─────────────────────────────────────────────────────────────
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    id: wifi_signal_db
+    update_interval: 30s
+    internal: true
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+      id: wifi_ip
+      internal: true
+
+# ─── LVGL UI ─────────────────────────────────────────────────────────────────
+lvgl:
+  displays:
+    - my_display
+  touchscreens:
+    - my_touch
+
+  # Dim backlight after 60s idle (requires backlight PWM or on/off via CH422G enable_pin)
+  on_idle:
+    - timeout: 60s
+      then:
+        - logger.log: "Display idle"
+
+  theme:
+    button:
+      radius: 16
+      border_width: 0
+      shadow_width: 0
+      bg_color: 0x2C2C2C
+      text_color: 0xFFFFFF
+      text_font: font_body
+      checked:
+        bg_color: 0x1B8A3A
+        text_color: 0xFFFFFF
+      pressed:
+        bg_color: 0x1565C0
+
+  pages:
+    - id: main_page
+      bg_color: 0x121212
+      bg_opa: cover
+      widgets:
+
+        # ── Header bar ────────────────────────────────────────────────────────
+        - obj:
+            width: 800
+            height: 72
+            align: top_mid
+            bg_color: 0x1E1E1E
+            bg_opa: cover
+            border_width: 0
+            pad_all: 0
+            widgets:
+              - label:
+                  text: "ESP32-S3 · LVGL Demo"
+                  text_font: font_body
+                  text_color: 0x90CAF9
+                  align: left_mid
+                  x: 24
+              - label:
+                  id: lbl_wifi
+                  text: "WiFi"
+                  text_font: font_small
+                  text_color: 0x66BB6A
+                  align: right_mid
+                  x: -24
+
+        # ── Big greeting ──────────────────────────────────────────────────────
+        - label:
+            id: lbl_title
+            text: "Hello, World!"
+            text_font: font_title
+            text_color: 0xFFFFFF
+            align: center
+            y: -60
+
+        # ── Touch counter label ────────────────────────────────────────────────
+        - label:
+            id: lbl_counter
+            text: "Taps: 0"
+            text_font: font_body
+            text_color: 0xBDBDBD
+            align: center
+            y: 10
+
+        # ── Toggle button ─────────────────────────────────────────────────────
+        - button:
+            id: btn_toggle
+            checkable: true
+            width: 220
+            height: 72
+            align: center
+            y: 90
+            on_click:
+              - lambda: |-
+                  static int taps = 0;
+                  taps++;
+                  char buf[32];
+                  snprintf(buf, sizeof(buf), "Taps: %d", taps);
+                  lv_label_set_text(id(lbl_counter), buf);
+            widgets:
+              - label:
+                  id: lbl_btn
+                  text: "Tap me!"
+                  text_font: font_body
+                  align: center
+
+        # ── Footer ────────────────────────────────────────────────────────────
+        - label:
+            id: lbl_ip
+            text: "Connecting..."
+            text_font: font_small
+            text_color: 0x757575
+            align: bottom_mid
+            y: -16
+
+# Update IP label and WiFi indicator once connected
+interval:
+  - interval: 5s
+    then:
+      - lambda: |-
+          auto ip = id(wifi_ip).state;
+          if (!ip.empty()) {
+            lv_label_set_text(id(lbl_ip), ip.c_str());
+            lv_label_set_text(id(lbl_wifi), "WiFi \xE2\x9C\x93");
+          }
