@@ -96,6 +96,9 @@ display:
     color_order: RGB
     # 16MHz PCLK gives ~41fps at 800×480; reduce to 14MHz if you see glitches
     pclk_frequency: 16MHz
+    # Portrait mode: physical panel stays 800×480, LVGL logical canvas becomes 480×800.
+    # Use 270 instead of 90 to flip upside-down if the cable exits from the other side.
+    rotation: 90
     dimensions:
       width: 800
       height: 480
@@ -159,6 +162,11 @@ touchscreen:
     ch422g: ch422g_hub
     number: 1   # CTP_RST → CH422G IO1
     mode: OUTPUT
+  # Remap raw panel coordinates (800×480) to match display rotation: 90°CW → 480×800
+  # If touch is mirrored after this, swap mirror_x/mirror_y or try rotation: 270
+  transform:
+    swap_xy: true
+    mirror_y: true
   on_touch:
     - lambda: |-
         ESP_LOGI("touch", "x=%d y=%d", touch.x, touch.y);
@@ -226,10 +234,10 @@ lvgl:
       bg_opa: cover
       widgets:
 
-        # ── Header bar ────────────────────────────────────────────────────────
+        # ── Header bar — full portrait width (480px) ──────────────────────────
         - obj:
-            width: 800
-            height: 72
+            width: 480
+            height: 64
             align: top_mid
             bg_color: 0x1E1E1E
             bg_opa: cover
@@ -241,23 +249,24 @@ lvgl:
                   text_font: font_body
                   text_color: 0x90CAF9
                   align: left_mid
-                  x: 24
+                  x: 20
               - label:
                   id: lbl_wifi
                   text: "WiFi"
                   text_font: font_small
                   text_color: 0x66BB6A
                   align: right_mid
-                  x: -24
+                  x: -20
 
         # ── Big greeting ──────────────────────────────────────────────────────
+        # Portrait gives 800px of vertical space — spread things out more
         - label:
             id: lbl_title
             text: "Hello, World!"
             text_font: font_title
             text_color: 0xFFFFFF
             align: center
-            y: -60
+            y: -140
 
         # ── Touch counter label ────────────────────────────────────────────────
         - label:
@@ -266,16 +275,16 @@ lvgl:
             text_font: font_body
             text_color: 0xBDBDBD
             align: center
-            y: 10
+            y: -60
 
-        # ── Toggle button ─────────────────────────────────────────────────────
+        # ── Toggle button — wider in portrait ─────────────────────────────────
         - button:
             id: btn_toggle
             checkable: true
-            width: 220
-            height: 72
+            width: 320
+            height: 80
             align: center
-            y: 90
+            y: 40
             on_click:
               - lambda: |-
                   static int taps = 0;
@@ -297,7 +306,7 @@ lvgl:
             text_font: font_small
             text_color: 0x757575
             align: bottom_mid
-            y: -16
+            y: -20
 
 # Update IP label and WiFi indicator once connected
 interval:
