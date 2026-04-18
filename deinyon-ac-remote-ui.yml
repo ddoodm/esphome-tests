@@ -84,6 +84,12 @@ globals:
   - id: g_hvac_action
     type: int
     initial_value: '0'
+  # 0=heat direction  1=cool direction
+  # Cool mode → always 1. Heat mode → always 0.
+  # Auto (heat_cool) → updated by thermostat_direction sensor in device config.
+  - id: g_cool_dir
+    type: int
+    initial_value: '0'
 
 font:
   - file: "gfonts://Roboto"
@@ -142,19 +148,55 @@ script:
             lv_label_set_text(id(current_label), buf);
           }
 
-  # Recalculates the diff arc segment (current temp → setpoint gap).
-  # Call whenever g_mode, g_current_arc, or g_setpoint_arc changes.
+  # Redraws arc_track in the correct direction.
+  # Heat: indicator fills 135° → setpoint. Cool: fills setpoint → 405°.
+  # Call whenever g_cool_dir or g_setpoint_arc changes.
+  - id: update_arc_track
+    then:
+      - lambda: |-
+          lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_value);
+          lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+          if (id(g_cool_dir) == 1) {
+            // Cool: fill from setpoint → bottom-right (405°)
+            int ang = (int)(135.0f + id(g_setpoint_arc) / 100.0f * 270.0f);
+            lv_arc_set_bg_start_angle(id(arc_track), ang);
+            lv_arc_set_bg_end_angle(id(arc_track), 405);
+            lv_arc_set_value(id(arc_track), 100);
+          } else {
+            // Heat: fill from bottom-left (135°) → setpoint
+            lv_arc_set_bg_start_angle(id(arc_track), 135);
+            lv_arc_set_bg_end_angle(id(arc_track), 405);
+            lv_arc_set_value(id(arc_track), id(g_setpoint_arc));
+          }
+
+  # Recalculates the diff arc (gap between current temp and setpoint).
+  # Heat direction: shows current→setpoint when setpoint > current.
+  # Cool direction: shows setpoint→current when current > setpoint (room warmer).
+  # Call whenever g_mode, g_cool_dir, g_current_arc, or g_setpoint_arc changes.
   - id: update_diff_arc
     then:
       - lambda: |-
-          if (id(g_mode) == 0 || id(g_setpoint_arc) <= id(g_current_arc)) {
+          if (id(g_mode) == 0) {
             lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+            return;
+          }
+          bool show;
+          int diff_start, diff_end;
+          if (id(g_cool_dir) == 1) {
+            show       = (id(g_current_arc) > id(g_setpoint_arc));
+            diff_start = (int)(135.0f + id(g_setpoint_arc) / 100.0f * 270.0f);
+            diff_end   = (int)(135.0f + id(g_current_arc)  / 100.0f * 270.0f);
           } else {
-            lv_arc_set_bg_start_angle(id(arc_diff),
-              (int)(135.0f + id(g_current_arc) / 100.0f * 270.0f));
-            lv_arc_set_bg_end_angle(id(arc_diff),
-              (int)(135.0f + id(g_setpoint_arc) / 100.0f * 270.0f));
+            show       = (id(g_setpoint_arc) > id(g_current_arc));
+            diff_start = (int)(135.0f + id(g_current_arc)  / 100.0f * 270.0f);
+            diff_end   = (int)(135.0f + id(g_setpoint_arc) / 100.0f * 270.0f);
+          }
+          if (show) {
+            lv_arc_set_bg_start_angle(id(arc_diff), diff_start);
+            lv_arc_set_bg_end_angle(id(arc_diff),   diff_end);
             lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
           }
 
   # Debounces setpoint service calls during arc drag / rapid +/- taps.
@@ -184,26 +226,31 @@ script:
               track_col  = lv_color_hex(0x003E7A);
               accent_col = lv_color_hex(0x33AAFF);
               accent_num = 0x33AAFF;
+              id(g_cool_dir) = 1;
               break;
             case 2: // heat — orange-red
               track_col  = lv_color_hex(0x7A2500);
               accent_col = lv_color_hex(0xFF6622);
               accent_num = 0xFF6622;
+              id(g_cool_dir) = 0;
               break;
-            case 3: // auto — peppermint
+            case 3: // auto — peppermint (direction owned by thermostat_direction sensor)
               track_col  = lv_color_hex(0x006B50);
               accent_col = lv_color_hex(0x00D9A3);
               accent_num = 0x00D9A3;
+              // g_cool_dir is set by the thermostat direction sensor handler; don't override
               break;
             case 4: // fan-only — silver
               track_col  = lv_color_hex(0x333333);
               accent_col = lv_color_hex(0x888888);
               accent_num = 0x888888;
+              id(g_cool_dir) = 0;
               break;
             default: // off
               track_col  = lv_color_hex(0x1A1A1A);
               accent_col = lv_color_hex(0x444444);
               accent_num = 0x444444;
+              id(g_cool_dir) = 0;
               break;
           }
           // Publish accent for other lambdas to consume
@@ -217,16 +264,12 @@ script:
           if (powered)
             lv_obj_set_style_arc_color(id(arc_track), track_col, LV_PART_INDICATOR);
           lv_obj_set_style_arc_color(id(arc_diff), active_col, LV_PART_INDICATOR);
-          if (!powered) {
-            lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
-          } else if (id(g_setpoint_arc) > id(g_current_arc)) {
-            lv_arc_set_bg_start_angle(id(arc_diff),
-              (int)(135.0f + id(g_current_arc) / 100.0f * 270.0f));
-            lv_arc_set_bg_end_angle(id(arc_diff),
-              (int)(135.0f + id(g_setpoint_arc) / 100.0f * 270.0f));
-            lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
-          }
           lv_obj_set_style_border_color(id(arc_setpoint), active_col, LV_PART_KNOB);
+          // Cancel any in-flight arc animations before redrawing
+          lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_value);
+          lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+          lv_anim_del(id(arc_diff),  (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+          lv_anim_del(id(arc_diff),  (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
 
           // ── Power button ───────────────────────────────────────────────────
           lv_obj_set_style_border_color(id(btn_power),
@@ -248,6 +291,8 @@ script:
           lv_obj_set_style_text_color(id(icon_fan_pop_low),  popup_col, LV_STATE_DEFAULT);
           lv_obj_set_style_text_color(id(icon_fan_pop_med),  popup_col, LV_STATE_DEFAULT);
           lv_obj_set_style_text_color(id(icon_fan_pop_high), popup_col, LV_STATE_DEFAULT);
+      - script.execute: update_arc_track
+      - script.execute: update_diff_arc
 
   # Updates the action status label and gradient backdrop.
   # Call whenever g_hvac_action changes.
@@ -442,8 +487,29 @@ lvgl:
             scrollable: false
             widgets:
 
-              # Arc 1 — dark-gray background ring + mode-coloured setpoint indicator.
+              # Arc 0 — permanent dark-grey background ring (always full 270°).
+              # Provides the grey ring independently of arc_track's indicator direction.
+              - arc:
+                  id: arc_bg
+                  adjustable: false
+                  min_value: 0
+                  max_value: 100
+                  value: 0
+                  width: 100%
+                  height: 100%
+                  arc_color: 0x1A1A1A
+                  arc_width: 32
+                  indicator:
+                    arc_opa: 0%
+                    arc_width: 32
+                  knob:
+                    bg_opa: transp
+                    border_opa: transp
+
+              # Arc 1 — mode-coloured setpoint fill (direction-aware).
+              # Main arc is transparent (arc_bg provides the grey ring).
               # Indicator opa starts at 0% (off state); apply_mode_style reveals it on power-on.
+              # Heat: indicator fills 135°→setpoint. Cool: fills setpoint→405°.
               - arc:
                   id: arc_track
                   adjustable: false
@@ -452,8 +518,7 @@ lvgl:
                   value: 30
                   width: 100%
                   height: 100%
-                  arc_color: 0x1A1A1A
-                  arc_width: 32
+                  arc_width: 0
                   indicator:
                     arc_color: 0x006B50
                     arc_width: 32
@@ -584,15 +649,34 @@ lvgl:
                           // Convert arc → temperature, snapped to nearest 0.5 °C
                           float raw = arc_val / 100.0f * (id(g_temp_max) - id(g_temp_min)) + id(g_temp_min);
                           id(g_setpoint) = roundf(raw * 2.0f) / 2.0f;
-                          // Direct set — no animation during drag
-                          lv_arc_set_value(id(arc_track), arc_val);
-                          // Diff segment: only when powered and setpoint above current
-                          if (id(g_mode) != 0 && arc_val > id(g_current_arc)) {
-                            lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
-                            lv_arc_set_bg_start_angle(id(arc_diff),
-                              (int)(135.0f + id(g_current_arc) / 100.0f * 270.0f));
-                            lv_arc_set_bg_end_angle(id(arc_diff),
-                              (int)(135.0f + (float)arc_val / 100.0f * 270.0f));
+                          // Update arc_track — direction-aware, no animation during drag
+                          if (id(g_cool_dir) == 1) {
+                            lv_arc_set_bg_start_angle(id(arc_track), (int)(135.0f + arc_val / 100.0f * 270.0f));
+                            lv_arc_set_bg_end_angle(id(arc_track), 405);
+                            lv_arc_set_value(id(arc_track), 100);
+                          } else {
+                            lv_arc_set_bg_start_angle(id(arc_track), 135);
+                            lv_arc_set_bg_end_angle(id(arc_track), 405);
+                            lv_arc_set_value(id(arc_track), arc_val);
+                          }
+                          // Diff segment — direction-aware
+                          if (id(g_mode) != 0) {
+                            bool show = (id(g_cool_dir) == 1)
+                              ? (id(g_current_arc) > arc_val)
+                              : (arc_val > id(g_current_arc));
+                            if (show) {
+                              int ds = (id(g_cool_dir) == 1)
+                                ? (int)(135.0f + arc_val / 100.0f * 270.0f)
+                                : (int)(135.0f + id(g_current_arc) / 100.0f * 270.0f);
+                              int de = (id(g_cool_dir) == 1)
+                                ? (int)(135.0f + id(g_current_arc) / 100.0f * 270.0f)
+                                : (int)(135.0f + arc_val / 100.0f * 270.0f);
+                              lv_arc_set_bg_start_angle(id(arc_diff), ds);
+                              lv_arc_set_bg_end_angle(id(arc_diff), de);
+                              lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                            } else {
+                              lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                            }
                           } else {
                             lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
                           }
@@ -618,9 +702,10 @@ lvgl:
               then:
                 - lambda: |-
                     if (std::isnan(id(g_setpoint))) return;
-                    // Snapshot current visual arc position before updating globals —
-                    // correct animation start even mid-animation on rapid taps
-                    int32_t vis = lv_arc_get_value(id(arc_track));
+                    // Snapshot current visual positions BEFORE updating globals
+                    int32_t vis_setpoint = lv_arc_get_value(id(arc_setpoint));
+                    int32_t vis_heat     = lv_arc_get_value(id(arc_track));  // used in heat mode
+                    int32_t prev_sp_arc  = id(g_setpoint_arc);               // used in cool mode
                     if (id(g_setpoint) > id(g_temp_min)) {
                       id(g_setpoint) -= 0.5f;
                       if (id(g_setpoint) < id(g_temp_min)) id(g_setpoint) = id(g_temp_min);
@@ -628,40 +713,103 @@ lvgl:
                                             / (id(g_temp_max) - id(g_temp_min)) * 100.0f);
                     }
                     int32_t tgt = id(g_setpoint_arc);
-                    // Animate arc_track and arc_setpoint knob together
-                    lv_anim_del(id(arc_track),    (lv_anim_exec_xcb_t)lv_arc_set_value);
+                    int32_t cur = id(g_current_arc);
+                    // ── Animate arc_setpoint knob (always lv_arc_set_value)
                     lv_anim_del(id(arc_setpoint), (lv_anim_exec_xcb_t)lv_arc_set_value);
                     {
                       lv_anim_t a;
                       lv_anim_init(&a);
                       lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_value);
-                      lv_anim_set_values(&a, vis, tgt);
+                      lv_anim_set_values(&a, vis_setpoint, tgt);
                       lv_anim_set_time(&a, 200);
                       lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-                      lv_anim_set_var(&a, id(arc_track));
-                      lv_anim_start(&a);
                       lv_anim_set_var(&a, id(arc_setpoint));
                       lv_anim_start(&a);
                     }
-                    // Animate arc_diff end angle in sync (only when powered)
-                    int32_t cur = id(g_current_arc);
-                    if (id(g_mode) != 0 && tgt > cur) {
-                      lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
-                      int32_t ang_from = (vis > cur) ? (int)(135.0f + vis / 100.0f * 270.0f)
-                                                     : (int)(135.0f + cur / 100.0f * 270.0f);
-                      int32_t ang_to   = (int)(135.0f + tgt / 100.0f * 270.0f);
-                      lv_arc_set_bg_start_angle(id(arc_diff),
-                        (int)(135.0f + cur / 100.0f * 270.0f));
-                      lv_anim_del(id(arc_diff), (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
+                    // ── Animate arc_track (direction-aware)
+                    if (id(g_cool_dir) == 1) {
+                      // Cool: animate bg_start_angle leftward
+                      int32_t ang_prev = (int)(135.0f + prev_sp_arc / 100.0f * 270.0f);
+                      int32_t ang_tgt  = (int)(135.0f + tgt / 100.0f * 270.0f);
+                      lv_arc_set_value(id(arc_track), 100);
+                      lv_arc_set_bg_end_angle(id(arc_track), 405);
+                      lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
                       {
                         lv_anim_t a;
                         lv_anim_init(&a);
-                        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
-                        lv_anim_set_var(&a, id(arc_diff));
-                        lv_anim_set_values(&a, ang_from, ang_to);
+                        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+                        lv_anim_set_var(&a, id(arc_track));
+                        lv_anim_set_values(&a, ang_prev, ang_tgt);
                         lv_anim_set_time(&a, 200);
                         lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
                         lv_anim_start(&a);
+                      }
+                    } else {
+                      // Heat: animate value
+                      lv_arc_set_bg_start_angle(id(arc_track), 135);
+                      lv_arc_set_bg_end_angle(id(arc_track), 405);
+                      lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_value);
+                      {
+                        lv_anim_t a;
+                        lv_anim_init(&a);
+                        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_value);
+                        lv_anim_set_values(&a, vis_heat, tgt);
+                        lv_anim_set_time(&a, 200);
+                        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+                        lv_anim_set_var(&a, id(arc_track));
+                        lv_anim_start(&a);
+                      }
+                    }
+                    // ── Animate arc_diff (direction-aware, only when powered)
+                    if (id(g_mode) != 0) {
+                      if (id(g_cool_dir) == 1) {
+                        // Cool: diff from setpoint → current; show when current > setpoint
+                        if (cur > tgt) {
+                          lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                          int32_t diff_end  = (int)(135.0f + cur / 100.0f * 270.0f);
+                          bool was_showing  = (cur > prev_sp_arc);
+                          int32_t ang_from  = was_showing
+                            ? (int)(135.0f + prev_sp_arc / 100.0f * 270.0f)
+                            : (int)(135.0f + cur / 100.0f * 270.0f);
+                          int32_t ang_to    = (int)(135.0f + tgt / 100.0f * 270.0f);
+                          lv_arc_set_bg_end_angle(id(arc_diff), diff_end);
+                          lv_anim_del(id(arc_diff), (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+                          {
+                            lv_anim_t a;
+                            lv_anim_init(&a);
+                            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+                            lv_anim_set_var(&a, id(arc_diff));
+                            lv_anim_set_values(&a, ang_from, ang_to);
+                            lv_anim_set_time(&a, 200);
+                            lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+                            lv_anim_start(&a);
+                          }
+                        } else {
+                          lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                        }
+                      } else {
+                        // Heat: diff from current → setpoint; show when setpoint > current
+                        if (tgt > cur) {
+                          lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                          int32_t ang_from = (vis_heat > cur)
+                            ? (int)(135.0f + vis_heat / 100.0f * 270.0f)
+                            : (int)(135.0f + cur / 100.0f * 270.0f);
+                          int32_t ang_to   = (int)(135.0f + tgt / 100.0f * 270.0f);
+                          lv_arc_set_bg_start_angle(id(arc_diff), (int)(135.0f + cur / 100.0f * 270.0f));
+                          lv_anim_del(id(arc_diff), (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
+                          {
+                            lv_anim_t a;
+                            lv_anim_init(&a);
+                            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
+                            lv_anim_set_var(&a, id(arc_diff));
+                            lv_anim_set_values(&a, ang_from, ang_to);
+                            lv_anim_set_time(&a, 200);
+                            lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+                            lv_anim_start(&a);
+                          }
+                        } else {
+                          lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                        }
                       }
                     } else {
                       lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
@@ -733,9 +881,10 @@ lvgl:
               then:
                 - lambda: |-
                     if (std::isnan(id(g_setpoint))) return;
-                    // Snapshot current visual arc position before updating globals —
-                    // correct animation start even mid-animation on rapid taps
-                    int32_t vis = lv_arc_get_value(id(arc_track));
+                    // Snapshot current visual positions BEFORE updating globals
+                    int32_t vis_setpoint = lv_arc_get_value(id(arc_setpoint));
+                    int32_t vis_heat     = lv_arc_get_value(id(arc_track));  // used in heat mode
+                    int32_t prev_sp_arc  = id(g_setpoint_arc);               // used in cool mode
                     if (id(g_setpoint) < id(g_temp_max)) {
                       id(g_setpoint) += 0.5f;
                       if (id(g_setpoint) > id(g_temp_max)) id(g_setpoint) = id(g_temp_max);
@@ -743,40 +892,103 @@ lvgl:
                                             / (id(g_temp_max) - id(g_temp_min)) * 100.0f);
                     }
                     int32_t tgt = id(g_setpoint_arc);
-                    // Animate arc_track and arc_setpoint knob together
-                    lv_anim_del(id(arc_track),    (lv_anim_exec_xcb_t)lv_arc_set_value);
+                    int32_t cur = id(g_current_arc);
+                    // ── Animate arc_setpoint knob (always lv_arc_set_value)
                     lv_anim_del(id(arc_setpoint), (lv_anim_exec_xcb_t)lv_arc_set_value);
                     {
                       lv_anim_t a;
                       lv_anim_init(&a);
                       lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_value);
-                      lv_anim_set_values(&a, vis, tgt);
+                      lv_anim_set_values(&a, vis_setpoint, tgt);
                       lv_anim_set_time(&a, 200);
                       lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-                      lv_anim_set_var(&a, id(arc_track));
-                      lv_anim_start(&a);
                       lv_anim_set_var(&a, id(arc_setpoint));
                       lv_anim_start(&a);
                     }
-                    // Animate arc_diff end angle in sync (only when powered)
-                    int32_t cur = id(g_current_arc);
-                    if (id(g_mode) != 0 && tgt > cur) {
-                      lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
-                      int32_t ang_from = (vis > cur) ? (int)(135.0f + vis / 100.0f * 270.0f)
-                                                     : (int)(135.0f + cur / 100.0f * 270.0f);
-                      int32_t ang_to   = (int)(135.0f + tgt / 100.0f * 270.0f);
-                      lv_arc_set_bg_start_angle(id(arc_diff),
-                        (int)(135.0f + cur / 100.0f * 270.0f));
-                      lv_anim_del(id(arc_diff), (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
+                    // ── Animate arc_track (direction-aware)
+                    if (id(g_cool_dir) == 1) {
+                      // Cool: animate bg_start_angle rightward
+                      int32_t ang_prev = (int)(135.0f + prev_sp_arc / 100.0f * 270.0f);
+                      int32_t ang_tgt  = (int)(135.0f + tgt / 100.0f * 270.0f);
+                      lv_arc_set_value(id(arc_track), 100);
+                      lv_arc_set_bg_end_angle(id(arc_track), 405);
+                      lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
                       {
                         lv_anim_t a;
                         lv_anim_init(&a);
-                        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
-                        lv_anim_set_var(&a, id(arc_diff));
-                        lv_anim_set_values(&a, ang_from, ang_to);
+                        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+                        lv_anim_set_var(&a, id(arc_track));
+                        lv_anim_set_values(&a, ang_prev, ang_tgt);
                         lv_anim_set_time(&a, 200);
                         lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
                         lv_anim_start(&a);
+                      }
+                    } else {
+                      // Heat: animate value
+                      lv_arc_set_bg_start_angle(id(arc_track), 135);
+                      lv_arc_set_bg_end_angle(id(arc_track), 405);
+                      lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_value);
+                      {
+                        lv_anim_t a;
+                        lv_anim_init(&a);
+                        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_value);
+                        lv_anim_set_values(&a, vis_heat, tgt);
+                        lv_anim_set_time(&a, 200);
+                        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+                        lv_anim_set_var(&a, id(arc_track));
+                        lv_anim_start(&a);
+                      }
+                    }
+                    // ── Animate arc_diff (direction-aware, only when powered)
+                    if (id(g_mode) != 0) {
+                      if (id(g_cool_dir) == 1) {
+                        // Cool: diff from setpoint → current; show when current > setpoint
+                        if (cur > tgt) {
+                          lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                          int32_t diff_end = (int)(135.0f + cur / 100.0f * 270.0f);
+                          // If diff was showing before, animate from prev position
+                          int32_t ang_from = (cur > prev_sp_arc)
+                            ? (int)(135.0f + prev_sp_arc / 100.0f * 270.0f)
+                            : (int)(135.0f + cur / 100.0f * 270.0f);
+                          int32_t ang_to = (int)(135.0f + tgt / 100.0f * 270.0f);
+                          lv_arc_set_bg_end_angle(id(arc_diff), diff_end);
+                          lv_anim_del(id(arc_diff), (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+                          {
+                            lv_anim_t a;
+                            lv_anim_init(&a);
+                            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+                            lv_anim_set_var(&a, id(arc_diff));
+                            lv_anim_set_values(&a, ang_from, ang_to);
+                            lv_anim_set_time(&a, 200);
+                            lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+                            lv_anim_start(&a);
+                          }
+                        } else {
+                          lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                        }
+                      } else {
+                        // Heat: diff from current → setpoint; show when setpoint > current
+                        if (tgt > cur) {
+                          lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                          int32_t ang_from = (vis_heat > cur)
+                            ? (int)(135.0f + vis_heat / 100.0f * 270.0f)
+                            : (int)(135.0f + cur / 100.0f * 270.0f);
+                          int32_t ang_to   = (int)(135.0f + tgt / 100.0f * 270.0f);
+                          lv_arc_set_bg_start_angle(id(arc_diff), (int)(135.0f + cur / 100.0f * 270.0f));
+                          lv_anim_del(id(arc_diff), (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
+                          {
+                            lv_anim_t a;
+                            lv_anim_init(&a);
+                            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
+                            lv_anim_set_var(&a, id(arc_diff));
+                            lv_anim_set_values(&a, ang_from, ang_to);
+                            lv_anim_set_time(&a, 200);
+                            lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+                            lv_anim_start(&a);
+                          }
+                        } else {
+                          lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+                        }
                       }
                     } else {
                       lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);

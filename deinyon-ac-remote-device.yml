@@ -1,5 +1,8 @@
 substitutions:
   ac_entity_id: climate.actron_test_aircon
+  # Text sensor entity for the actron_b812 thermostat direction ("off"/"cool"/"heat").
+  # Used in auto (heat_cool) mode to determine arc direction.
+  ac_thermostat_dir_entity_id: sensor.actron_test_aircon_thermostat_direction
 
 esphome:
   name: deinyon-ac-remote
@@ -58,8 +61,8 @@ sensor:
             int arc_val = (int)((x - id(g_temp_min)) / range * 100.0f);
             arc_val = std::max(0, std::min(100, arc_val));
             id(g_setpoint_arc) = arc_val;
-            lv_arc_set_value(id(arc_track), arc_val);
             lv_arc_set_value(id(arc_setpoint), arc_val);
+        - script.execute: update_arc_track
         - script.execute: render_setpoint_label
         - script.execute: update_diff_arc
 
@@ -148,6 +151,20 @@ text_sensor:
             lv_color_t icon_col = id(g_fan_auto) ? lv_color_hex(id(g_accent_hex)) : lv_color_hex(0x777777);
             lv_obj_set_style_border_color(id(btn_fan_auto), col,      LV_STATE_DEFAULT);
             lv_obj_set_style_text_color(id(icon_fan_auto),  icon_col, LV_STATE_DEFAULT);
+
+  # actron_b812 thermostat direction: "off" / "cool" / "heat".
+  # Only relevant in auto (heat_cool) mode — updates g_cool_dir and redraws arcs.
+  - platform: homeassistant
+    entity_id: ${ac_thermostat_dir_entity_id}
+    id: ha_thermostat_dir
+    on_value:
+      then:
+        - lambda: |-
+            if (id(g_mode) == 3) {
+              id(g_cool_dir) = (x == "cool") ? 1 : 0;
+            }
+        - script.execute: update_arc_track
+        - script.execute: update_diff_arc
 
 # Quad SPI bus for display
 spi:
