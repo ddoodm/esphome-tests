@@ -32,7 +32,7 @@ climate::ClimateTraits ActronB812Climate::traits() {
 }
 
 void ActronB812Climate::setup() {
-  active_cmd_ = CMD_OFF;
+  active_cmd_ = apply_zone_bits_(0);
 
   // Seed sensible defaults so HA shows the dial immediately on first boot.
   // ESPHome's base Climate class restores these from flash on subsequent boots.
@@ -438,7 +438,7 @@ void ActronB812Climate::update_action_() {
 
 uint8_t ActronB812Climate::build_cmd_(climate::ClimateMode mode,
                                       climate::ClimateFanMode fan) {
-  uint8_t cmd = BIT_FRM1 | BIT_FRM2;
+  uint8_t cmd = 0;
 
   // In AUTO mode the fan only follows the compressor: suppress fan bits when the
   // effective mode is FAN_ONLY (thermostat idle).  Use the last manual speed otherwise.
@@ -469,11 +469,55 @@ uint8_t ActronB812Climate::build_cmd_(climate::ClimateMode mode,
       break;
     case climate::CLIMATE_MODE_OFF:
     default:
-      cmd = CMD_OFF;  // Clear fan bits too
+      cmd = 0;  // Clear fan bits too — zone bits applied below
       break;
   }
 
+  return apply_zone_bits_(cmd);
+}
+
+uint8_t ActronB812Climate::apply_zone_bits_(uint8_t cmd) {
+  cmd &= ~(BIT_ZONE1 | BIT_ZONE2);
+  if (zone_1_enabled_) cmd |= BIT_ZONE1;
+  if (zone_2_enabled_) cmd |= BIT_ZONE2;
   return cmd;
+}
+
+void ActronB812ZoneSwitch::write_state(bool state) {
+  this->parent_->set_zone_enabled(this->zone_, state);
+}
+
+void ActronB812Climate::set_zone_enabled(uint8_t zone, bool enabled) {
+  if (zone != 1 && zone != 2) return;
+  bool &target = (zone == 1) ? zone_1_enabled_ : zone_2_enabled_;
+  bool &other  = (zone == 1) ? zone_2_enabled_ : zone_1_enabled_;
+  ActronB812ZoneSwitch *target_sw = (zone == 1) ? zone_1_switch_ : zone_2_switch_;
+  ActronB812ZoneSwitch *other_sw  = (zone == 1) ? zone_2_switch_ : zone_1_switch_;
+
+  if (target == enabled) {
+    if (target_sw) target_sw->publish_state(target);
+    return;
+  }
+  target = enabled;
+
+  // Invariant: at least one zone must be enabled.  Last-toggle-wins:
+  // disabling the only-enabled zone auto-enables the other.
+  bool other_forced_on = false;
+  if (!target && !other) {
+    other = true;
+    other_forced_on = true;
+  }
+
+  if (target_sw) target_sw->publish_state(target);
+  if (other_forced_on && other_sw) other_sw->publish_state(other);
+
+  // Re-emit the active frame with the new zone bits and ensure any pending
+  // mode/fan transition is also re-evaluated.
+  active_cmd_ = apply_zone_bits_(active_cmd_);
+  pending_change_ = true;
+
+  ESP_LOGD(TAG, "Zone %u -> %s%s", zone, enabled ? "on" : "off",
+           other_forced_on ? " (other auto-enabled)" : "");
 }
 
 void ActronB812Climate::send_frame_(uint8_t data) {

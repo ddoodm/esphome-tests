@@ -6,6 +6,7 @@
 #include "esphome/components/climate/climate.h"
 #include "esphome/components/remote_transmitter/remote_transmitter.h"
 #include "esphome/components/sensor/sensor.h"
+#include "esphome/components/switch/switch.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/time/real_time_clock.h"
 #include "esphome/core/component.h"
@@ -16,16 +17,31 @@ namespace actron_b812 {
 enum ThermostatDirection { THERMO_OFF, THERMO_COOL, THERMO_HEAT };
 
 // Bit positions (MSB first, transmission order)
-static const uint8_t BIT_FS3  = (1 << 7);  // Fan high
-static const uint8_t BIT_FRM1 = (1 << 6);  // Always 1
-static const uint8_t BIT_FRM2 = (1 << 5);  // Always 1
-static const uint8_t BIT_CALL = (1 << 4);  // Calling for conditioning
-static const uint8_t BIT_COMP = (1 << 3);  // Compressor on
-static const uint8_t BIT_FS1  = (1 << 2);  // Fan low
-static const uint8_t BIT_HEAT = (1 << 1);  // Heat mode (vs cool)
-static const uint8_t BIT_FS2  = (1 << 0);  // Fan mid
+static const uint8_t BIT_FS3   = (1 << 7);  // Fan high
+static const uint8_t BIT_ZONE1 = (1 << 6);  // Zone 1 damper enable
+static const uint8_t BIT_ZONE2 = (1 << 5);  // Zone 2 damper enable
+static const uint8_t BIT_CALL  = (1 << 4);  // Calling for conditioning
+static const uint8_t BIT_COMP  = (1 << 3);  // Compressor on
+static const uint8_t BIT_FS1   = (1 << 2);  // Fan low
+static const uint8_t BIT_HEAT  = (1 << 1);  // Heat mode (vs cool)
+static const uint8_t BIT_FS2   = (1 << 0);  // Fan mid
 
-static const uint8_t CMD_OFF  = BIT_FRM1 | BIT_FRM2;
+// Default OFF frame: both zones enabled, no fan, no compressor, no call.
+// Live frames OR in the current per-zone enable bits via apply_zone_bits_().
+static const uint8_t CMD_OFF  = BIT_ZONE1 | BIT_ZONE2;
+
+class ActronB812Climate;
+
+class ActronB812ZoneSwitch : public switch_::Switch {
+ public:
+  ActronB812ZoneSwitch(ActronB812Climate *parent, uint8_t zone)
+      : parent_(parent), zone_(zone) {}
+
+ protected:
+  void write_state(bool state) override;
+  ActronB812Climate *parent_;
+  uint8_t zone_;
+};
 
 class ActronB812Climate : public climate::Climate, public PollingComponent {
  public:
@@ -50,6 +66,13 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   void set_deadband_expires_at_sensor(text_sensor::TextSensor *s) { deadband_expires_at_sensor_ = s; }
   void set_reversing_valve_sensor(binary_sensor::BinarySensor *s) { reversing_valve_sensor_ = s; }
   void set_call_active_sensor(binary_sensor::BinarySensor *s) { call_active_sensor_ = s; }
+  void set_zone_1_switch(ActronB812ZoneSwitch *s) { zone_1_switch_ = s; }
+  void set_zone_2_switch(ActronB812ZoneSwitch *s) { zone_2_switch_ = s; }
+
+  // Toggle a zone enable. Enforces the invariant that at least one zone is
+  // always enabled — disabling a zone while the other is already off will
+  // auto-enable the other (last-toggle-wins).  Triggers retransmit.
+  void set_zone_enabled(uint8_t zone, bool enabled);
 
   void setup() override;
   void update() override;  // Called every 222ms — sends current frame
@@ -108,6 +131,14 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   text_sensor::TextSensor *deadband_expires_at_sensor_{nullptr};
   binary_sensor::BinarySensor *reversing_valve_sensor_{nullptr};
   binary_sensor::BinarySensor *call_active_sensor_{nullptr};
+  ActronB812ZoneSwitch *zone_1_switch_{nullptr};
+  ActronB812ZoneSwitch *zone_2_switch_{nullptr};
+
+  // Per-zone damper enable.  Both default ON so installations without
+  // damper actuators (and YAML configs that omit the switches entirely)
+  // behave exactly as before.
+  bool zone_1_enabled_{true};
+  bool zone_2_enabled_{true};
   std::string state_last_{"__unset__"};  // dedup
   int comp_running_last_{-1};            // dedup (-1 = unset)
   std::string thermostat_direction_last_{"__unset__"};  // dedup
@@ -129,6 +160,9 @@ class ActronB812Climate : public climate::Climate, public PollingComponent {
   climate::ClimateMode effective_mode_();
   void update_action_();
   uint8_t build_cmd_(climate::ClimateMode mode, climate::ClimateFanMode fan);
+  // OR the current per-zone enable bits into a frame.  Strips any existing
+  // zone bits first so callers don't need to know the default state.
+  uint8_t apply_zone_bits_(uint8_t cmd);
   void send_frame_(uint8_t cmd);
   int32_t epoch_now_();  // returns current Unix timestamp, or 0 if time not synced
 };

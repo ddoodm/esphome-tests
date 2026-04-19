@@ -1,15 +1,23 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import binary_sensor, climate, remote_transmitter, sensor, text_sensor
+from esphome.components import (
+    binary_sensor,
+    climate,
+    remote_transmitter,
+    sensor,
+    switch,
+    text_sensor,
+)
 from esphome.components import time as time_
 from esphome.const import CONF_ID
 
-AUTO_LOAD = ["sensor", "binary_sensor", "text_sensor"]
+AUTO_LOAD = ["sensor", "binary_sensor", "text_sensor", "switch"]
 
 actron_b812_ns = cg.esphome_ns.namespace("actron_b812")
 ActronB812Climate = actron_b812_ns.class_(
     "ActronB812Climate", climate.Climate, cg.PollingComponent
 )
+ActronB812ZoneSwitch = actron_b812_ns.class_("ActronB812ZoneSwitch", switch.Switch)
 
 CONF_TRANSMITTER_ID = "transmitter_id"
 CONF_COMPRESSOR_COOLDOWN = "compressor_cooldown"
@@ -27,6 +35,8 @@ CONF_DEADBAND_ACTIVE = "deadband_active"
 CONF_DEADBAND_EXPIRES_AT = "deadband_expires_at"
 CONF_REVERSING_VALVE = "reversing_valve"
 CONF_CALL_ACTIVE = "call_active"
+CONF_ZONE_1 = "zone_1"
+CONF_ZONE_2 = "zone_2"
 
 CONFIG_SCHEMA = climate.climate_schema(ActronB812Climate).extend({
     cv.Required(CONF_TRANSMITTER_ID): cv.use_id(
@@ -51,6 +61,14 @@ CONFIG_SCHEMA = climate.climate_schema(ActronB812Climate).extend({
     ),
     cv.Optional(CONF_REVERSING_VALVE): binary_sensor.binary_sensor_schema(),
     cv.Optional(CONF_CALL_ACTIVE): binary_sensor.binary_sensor_schema(),
+    cv.Optional(CONF_ZONE_1): switch.switch_schema(
+        ActronB812ZoneSwitch,
+        default_restore_mode="RESTORE_DEFAULT_ON",
+    ),
+    cv.Optional(CONF_ZONE_2): switch.switch_schema(
+        ActronB812ZoneSwitch,
+        default_restore_mode="RESTORE_DEFAULT_ON",
+    ),
 }).extend(cv.polling_component_schema("222ms"))
 
 async def to_code(config):
@@ -105,3 +123,11 @@ async def to_code(config):
     if CONF_CALL_ACTIVE in config:
         bs = await binary_sensor.new_binary_sensor(config[CONF_CALL_ACTIVE])
         cg.add(var.set_call_active_sensor(bs))
+
+    if CONF_ZONE_1 in config:
+        sw = await switch.new_switch(config[CONF_ZONE_1], var, 1)
+        cg.add(var.set_zone_1_switch(sw))
+
+    if CONF_ZONE_2 in config:
+        sw = await switch.new_switch(config[CONF_ZONE_2], var, 2)
+        cg.add(var.set_zone_2_switch(sw))

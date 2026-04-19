@@ -138,3 +138,7 @@ climate:
       name: "Aircon Reversing Valve"
     call_active:
       name: "Aircon Call Active"
+    zone_1:
+      name: "Aircon Zone 1"
+    zone_2:
+      name: "Aircon Zone 2"
