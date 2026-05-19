@@ -6,10 +6,13 @@ substitutions:
 esphome:
   name: actron-test
 
+# external_components:
+  # - source:
+  #     type: local
+  #     path: components
 external_components:
-  - source:
-      type: local
-      path: components
+  - source: github://ddoodm/esphome-actron-b812@main
+    components: [actron_b812]
 
 esp32:
   board: esp32-c3-devkitm-1
@@ -28,6 +31,17 @@ ota:
   platform: esphome
 logger:
   level: DEBUG
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: status_led
+    name: "Status LED"
+    pin: GPIO10
+    num_leds: 1
+    rmt_symbols: 48
+    rgb_order: RGB
+    chipset: WS2812
+    default_transition_length: 300ms
 
 remote_transmitter:
   id: ac_tx
@@ -121,11 +135,30 @@ climate:
       name: "Aircon Compressor Running"
     state:
       name: "Aircon State"
-    #   on_value:
-    #     then:
-    #       - text_sensor.template.publish:
-    #           id: ac_state_mirror
-    #           state: !lambda 'return x;'
+      on_value:
+        then:
+          - lambda: |-
+              if (x == "cooling" || x == "comp_cooldown") {
+                auto call = id(status_led).turn_on();
+                call.set_brightness(0.5f);
+                call.set_rgb(0.0f, 0.3f, 1.0f);  // blue
+                call.perform();
+              } else if (x == "heating" || x == "heat_idle" || x == "heat_valve_hold") {
+                auto call = id(status_led).turn_on();
+                call.set_brightness(0.5f);
+                call.set_rgb(1.0f, 0.3f, 0.0f);  // amber/orange
+                call.perform();
+              } else if (x == "fan_only") {
+                auto call = id(status_led).turn_on();
+                call.set_brightness(0.2f);
+                call.set_rgb(0.2f, 0.8f, 1.0f);  // dim teal-green
+                call.perform();
+              } else {
+                auto call = id(status_led).turn_on();
+                call.set_brightness(0.2f);
+                call.set_rgb(1.0f, 1.0f, 1.0f);
+                call.perform();
+              }
     protection_expires_at:
       name: "Aircon Protection Expires At"
     thermostat_direction:
