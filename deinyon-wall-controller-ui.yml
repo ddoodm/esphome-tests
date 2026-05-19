@@ -1,0 +1,1336 @@
+# AC Wall Controller — LVGL UI (landscape, parametric)
+# Included by deinyon-wall-controller.yaml as a package.
+#
+# Layout (800×480):
+#   ┌──────────────────────────── status bar (h=44) ───────────────────────────┐
+#   │ time · weather · outdoor                              api · wifi          │
+#   ├────────────────────── climate column ─────────────┬── side column (260) ─┤
+#   │                                                   │  Mode  Cool Heat … │
+#   │           top-half arc + diff-arc + knob          │  Fan   Low Med …   │
+#   │                                                   │  Source: Main      │
+#   │                  22.0°C  (big)                    │          Desk      │
+#   │                  current 25.3 °C                  │          Bedroom   │
+#   │                                                   │          Average   │
+#   │     [-]                              [+]   [⏻]    │                    │
+#   └───────────────────────────────────────────────────┴────────────────────┘
+#
+# Everything is laid out via align: hints (TOP_MID, BOTTOM_RIGHT, …) so that
+# changing display dims requires only updating the substitutions block below.
+#
+# Direct local control: this device hosts the actron_b812 climate, so we call
+# climate.control directly — no homeassistant.service round-trip.
+
+# ── Parametric layout ─────────────────────────────────────────────────────────
+# Change these to retarget a different display. All widget positions are
+# expressed as align + offset from the parent container, so geometry follows.
+substitutions:
+  # Display geometry
+  screen_w:    "800"
+  screen_h:    "480"
+  statusbar_h: "44"
+  side_w:      "260"
+
+  # Arc geometry: top-half arc opening downward (180° → 360° sweep = 180°).
+  # Tweak arc_start_deg / arc_sweep_deg to shrink or shift the arc.
+  arc_size:      "360"
+  arc_start_deg: "180"
+  arc_sweep_deg: "180"
+  arc_thickness: "20"
+
+  # Setpoint snap step (also passed to the climate via the device config)
+  step_temp: "0.5"
+
+  # Accent colours (off / cool / heat / auto / fan-only / track variants)
+  col_off:        "0x444444"
+  col_cool:       "0x33AAFF"
+  col_cool_track: "0x003E7A"
+  col_heat:       "0xFF6622"
+  col_heat_track: "0x7A2500"
+  col_auto:       "0x00D9A3"
+  col_auto_track: "0x006B50"
+  col_fan:        "0x888888"
+  col_fan_track:  "0x333333"
+
+  # Surface colours
+  col_bg:           "0x000000"
+  col_panel:        "0x0D0D0D"
+  col_panel_border: "0x2E2E2E"
+  col_text_primary: "0xF5F5F5"
+  col_text_dim:     "0x777777"
+  col_text_label:   "0xBDBDBD"
+  col_arc_bg:       "0x1A1A1A"
+  col_status_bg:    "0x0A0A0A"
+
+# ── Fonts ─────────────────────────────────────────────────────────────────────
+font:
+  - file: "gfonts://Roboto"
+    id: font_temp_big
+    size: 96
+    bpp: 4
+    glyphs: "0123456789.-°C"
+  - file: "gfonts://Roboto"
+    id: font_temp_unit
+    size: 32
+    bpp: 4
+    glyphs: "°C"
+  - file: "gfonts://Roboto"
+    id: font_body
+    size: 20
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 16
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_tiny
+    size: 13
+    bpp: 4
+  # Material Design Icons — selected glyphs only to keep flash usage low
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: mdi_28
+    size: 28
+    bpp: 4
+    glyphs: &mdi_glyphs
+      - "\U000F0425"  # mdi:power
+      - "\U000F0717"  # mdi:snowflake     (cool)
+      - "\U000F0238"  # mdi:fire          (heat)
+      - "\U000F0453"  # mdi:autorenew     (auto)
+      - "\U000F0210"  # mdi:fan           (fan-only)
+      - "\U000F0BAF"  # mdi:fan-speed-1   (low)
+      - "\U000F0BB0"  # mdi:fan-speed-2   (med)
+      - "\U000F0BB1"  # mdi:fan-speed-3   (high)
+      - "\U000F171D"  # mdi:fan-auto
+      - "\U000F0374"  # mdi:minus
+      - "\U000F0417"  # mdi:plus
+      - "\U000F05A9"  # mdi:wifi
+      - "\U000F05AA"  # mdi:wifi-off
+      - "\U000F06A9"  # mdi:home-assistant
+      # weather icons
+      - "\U000F0599"  # mdi:weather-sunny
+      - "\U000F0595"  # mdi:weather-partly-cloudy
+      - "\U000F0590"  # mdi:weather-cloudy
+      - "\U000F0597"  # mdi:weather-rainy
+      - "\U000F0596"  # mdi:weather-pouring
+      - "\U000F0598"  # mdi:weather-snowy
+      - "\U000F0594"  # mdi:weather-night
+      - "\U000F0591"  # mdi:weather-fog
+      - "\U000F059D"  # mdi:weather-windy
+      - "\U000F0593"  # mdi:weather-lightning
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: mdi_32
+    size: 32
+    bpp: 4
+    glyphs: *mdi_glyphs
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: mdi_40
+    size: 40
+    bpp: 4
+    glyphs: *mdi_glyphs
+
+# ── UI globals ────────────────────────────────────────────────────────────────
+# Setpoint state is independent of HA — UI snaps locally and pushes via
+# debounced climate.control to avoid spamming the climate component.
+globals:
+  - id: g_setpoint
+    type: float
+    initial_value: 'NAN'
+  - id: g_setpoint_arc
+    type: int
+    initial_value: '40'
+  - id: g_temp_min
+    type: float
+    initial_value: ${ac_min_temp}
+  - id: g_temp_max
+    type: float
+    initial_value: ${ac_max_temp}
+  - id: g_current_arc
+    type: int
+    initial_value: '0'
+  - id: g_current_temp
+    type: float
+    initial_value: 'NAN'
+  # 0=off  1=cool  2=heat  3=auto  4=fan-only
+  - id: g_mode
+    type: int
+    initial_value: '0'
+  - id: g_prev_mode
+    type: int
+    initial_value: '1'
+  # 0=low 1=med 2=high 3=auto
+  - id: g_fan_speed
+    type: int
+    initial_value: '3'
+  # Active-mode accent (read by other lambdas to avoid duplicating mode switch)
+  - id: g_accent_hex
+    type: uint32_t
+    initial_value: ${col_off}
+  # Cool direction: 0=heat-side fill (left→right), 1=cool-side fill (right→left).
+  # In auto mode this is updated by the thermostat_direction sensor.
+  - id: g_cool_dir
+    type: int
+    initial_value: '0'
+  # 0=idle  1=cooling  2=heating  3=fan
+  - id: g_hvac_action
+    type: int
+    initial_value: '0'
+  - id: g_dimmed
+    type: bool
+    initial_value: 'false'
+
+# ── Scripts ───────────────────────────────────────────────────────────────────
+# Helpers shared by widget callbacks. All arc geometry uses ${arc_start_deg}
+# and ${arc_sweep_deg} so reflowing the arc is a one-line change.
+script:
+  # Setpoint label inside the arc — guards NaN until first climate state arrives
+  - id: render_setpoint_label
+    then:
+      - lambda: |-
+          if (std::isnan(id(g_setpoint))) {
+            lv_label_set_text(id(temp_label), "--");
+          } else {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%.1f", id(g_setpoint));
+            lv_label_set_text(id(temp_label), buf);
+          }
+
+  # Small "current 25.3 °C" line beneath the big number
+  - id: render_current_label
+    then:
+      - lambda: |-
+          if (std::isnan(id(g_current_temp))) {
+            lv_label_set_text(id(current_label), "--");
+          } else {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%.1f\xC2\xB0""C", id(g_current_temp));
+            lv_label_set_text(id(current_label), buf);
+          }
+
+  # Direction-aware redraw of arc_track. Heat: indicator fills 0→setpoint.
+  # Cool: fills setpoint→100. Both clamped to the arc range above.
+  - id: update_arc_track
+    then:
+      - lambda: |-
+          lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_value);
+          lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+          const float start = ${arc_start_deg}.0f;
+          const float sweep = ${arc_sweep_deg}.0f;
+          const float ratio = id(g_setpoint_arc) / 100.0f;
+          if (id(g_cool_dir) == 1) {
+            int ang = (int)(start + ratio * sweep);
+            lv_arc_set_bg_start_angle(id(arc_track), ang);
+            lv_arc_set_bg_end_angle(id(arc_track), (int)(start + sweep));
+            lv_arc_set_value(id(arc_track), 100);
+          } else {
+            lv_arc_set_bg_start_angle(id(arc_track), (int)start);
+            lv_arc_set_bg_end_angle(id(arc_track), (int)(start + sweep));
+            lv_arc_set_value(id(arc_track), id(g_setpoint_arc));
+          }
+
+  # Recalculates the bright accent diff segment (current↔setpoint gap).
+  # Hidden when off, when there's no gap, or when the gap is on the wrong side.
+  - id: update_diff_arc
+    then:
+      - lambda: |-
+          if (id(g_mode) == 0) {
+            lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+            return;
+          }
+          const float start = ${arc_start_deg}.0f;
+          const float sweep = ${arc_sweep_deg}.0f;
+          bool show;
+          int ds, de;
+          if (id(g_cool_dir) == 1) {
+            show = (id(g_current_arc) > id(g_setpoint_arc));
+            ds = (int)(start + id(g_setpoint_arc) / 100.0f * sweep);
+            de = (int)(start + id(g_current_arc)  / 100.0f * sweep);
+          } else {
+            show = (id(g_setpoint_arc) > id(g_current_arc));
+            ds = (int)(start + id(g_current_arc)  / 100.0f * sweep);
+            de = (int)(start + id(g_setpoint_arc) / 100.0f * sweep);
+          }
+          if (show) {
+            lv_arc_set_bg_start_angle(id(arc_diff), ds);
+            lv_arc_set_bg_end_angle(id(arc_diff),   de);
+            lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+          }
+
+  # Push a setpoint write to the climate after the user stops fiddling.
+  - id: debounce_setpoint
+    mode: restart
+    then:
+      - delay: 600ms
+      - if:
+          condition:
+            lambda: 'return !std::isnan(id(g_setpoint));'
+          then:
+            - climate.control:
+                id: ${ac_climate_id}
+                target_temperature: !lambda 'return id(g_setpoint);'
+
+  # Recolour everything that depends on the active mode in one place.
+  # Called whenever g_mode flips: power toggle, mode-row tap, climate state push.
+  - id: apply_mode_style
+    then:
+      - lambda: |-
+          lv_color_t track_col, accent_col;
+          uint32_t accent_num;
+          bool powered = (id(g_mode) != 0);
+          switch (id(g_mode)) {
+            case 1:  track_col = lv_color_hex(${col_cool_track});
+                     accent_col = lv_color_hex(${col_cool});
+                     accent_num = ${col_cool}; id(g_cool_dir) = 1; break;
+            case 2:  track_col = lv_color_hex(${col_heat_track});
+                     accent_col = lv_color_hex(${col_heat});
+                     accent_num = ${col_heat}; id(g_cool_dir) = 0; break;
+            case 3:  track_col = lv_color_hex(${col_auto_track});
+                     accent_col = lv_color_hex(${col_auto});
+                     accent_num = ${col_auto};
+                     // direction owned by thermostat_direction handler
+                     break;
+            case 4:  track_col = lv_color_hex(${col_fan_track});
+                     accent_col = lv_color_hex(${col_fan});
+                     accent_num = ${col_fan}; id(g_cool_dir) = 0; break;
+            default: track_col = lv_color_hex(${col_arc_bg});
+                     accent_col = lv_color_hex(${col_off});
+                     accent_num = ${col_off}; id(g_cool_dir) = 0; break;
+          }
+          id(g_accent_hex) = powered ? accent_num : (uint32_t)${col_off};
+          lv_color_t active_col = lv_color_hex(id(g_accent_hex));
+
+          // ── Arc: track + diff + knob border ───────────────────────────────
+          lv_obj_set_style_arc_opa(id(arc_track),
+                                   powered ? LV_OPA_COVER : LV_OPA_TRANSP,
+                                   LV_PART_INDICATOR);
+          if (powered) {
+            lv_obj_set_style_arc_color(id(arc_track), track_col, LV_PART_INDICATOR);
+          }
+          lv_obj_set_style_arc_color(id(arc_diff), active_col, LV_PART_INDICATOR);
+          lv_obj_set_style_border_color(id(arc_setpoint), active_col, LV_PART_KNOB);
+
+          // ── Power button border + icon colour ─────────────────────────────
+          lv_obj_set_style_border_color(id(btn_power),
+                                        powered ? active_col : lv_color_hex(${col_panel_border}),
+                                        LV_STATE_DEFAULT);
+          lv_obj_set_style_text_color(id(icon_power),
+                                      powered ? active_col : lv_color_hex(${col_text_dim}),
+                                      LV_STATE_DEFAULT);
+      - script.execute: update_arc_track
+      - script.execute: update_diff_arc
+      - script.execute: render_mode_buttons
+      - script.execute: render_action_label
+
+  # Mode segmented bar — highlight currently-active mode (cool/heat/auto/fan).
+  # Uses the mode's own accent so the highlight reads at a glance.
+  - id: render_mode_buttons
+    then:
+      - lambda: |-
+          struct ModeBtn { lv_obj_t* btn; lv_obj_t* lbl; int idx; uint32_t col; };
+          ModeBtn modes[] = {
+            { id(btn_mode_cool),    id(icon_mode_cool),    1, ${col_cool} },
+            { id(btn_mode_heat),    id(icon_mode_heat),    2, ${col_heat} },
+            { id(btn_mode_auto),    id(icon_mode_auto),    3, ${col_auto} },
+            { id(btn_mode_fan),     id(icon_mode_fan),     4, ${col_fan}  },
+          };
+          for (auto& m : modes) {
+            bool sel = (id(g_mode) == m.idx);
+            lv_color_t border = sel ? lv_color_hex(m.col) : lv_color_hex(${col_panel_border});
+            lv_color_t text   = sel ? lv_color_hex(m.col) : lv_color_hex(${col_text_dim});
+            lv_obj_set_style_border_color(m.btn, border, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(m.lbl, text, LV_STATE_DEFAULT);
+          }
+
+  # Fan segmented bar — uses the current mode accent (since fan speed is
+  # mode-agnostic, the "active" colour should reflect what's running).
+  - id: render_fan_buttons
+    then:
+      - lambda: |-
+          struct FanBtn { lv_obj_t* btn; lv_obj_t* lbl; int idx; };
+          FanBtn fans[] = {
+            { id(btn_fan_low),  id(icon_fan_low),  0 },
+            { id(btn_fan_med),  id(icon_fan_med),  1 },
+            { id(btn_fan_high), id(icon_fan_high), 2 },
+            { id(btn_fan_auto), id(icon_fan_auto), 3 },
+          };
+          uint32_t accent = id(g_accent_hex);
+          for (auto& f : fans) {
+            bool sel = (id(g_fan_speed) == f.idx);
+            lv_color_t border = sel ? lv_color_hex(accent) : lv_color_hex(${col_panel_border});
+            lv_color_t text   = sel ? lv_color_hex(accent) : lv_color_hex(${col_text_dim});
+            lv_obj_set_style_border_color(f.btn, border, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(f.lbl, text, LV_STATE_DEFAULT);
+          }
+
+  # Source list highlight — re-reads active_sensor_idx (set by select.set_action)
+  # and updates the live temp on each row.
+  - id: on_active_sensor_changed
+    then:
+      - lambda: |-
+          struct Row { lv_obj_t* btn; lv_obj_t* lbl_name; lv_obj_t* lbl_temp; int idx; };
+          Row rows[] = {
+            { id(btn_src_main),    id(lbl_src_main),    id(lbl_src_main_t),    ${sensor_main} },
+            { id(btn_src_desk),    id(lbl_src_desk),    id(lbl_src_desk_t),    ${sensor_desk} },
+            { id(btn_src_bedroom), id(lbl_src_bedroom), id(lbl_src_bedroom_t), ${sensor_bedroom} },
+            { id(btn_src_avg),     id(lbl_src_avg),     id(lbl_src_avg_t),     ${sensor_average} },
+          };
+          uint32_t accent = id(g_accent_hex);
+          for (auto& r : rows) {
+            bool sel = (id(active_sensor_idx) == r.idx);
+            lv_color_t border = sel ? lv_color_hex(accent) : lv_color_hex(${col_panel_border});
+            lv_color_t text   = sel ? lv_color_hex(${col_text_primary}) : lv_color_hex(${col_text_label});
+            lv_obj_set_style_border_color(r.btn, border, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(r.lbl_name, text, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(r.lbl_temp, text, LV_STATE_DEFAULT);
+          }
+      - script.execute: render_source_temps
+
+  # Refreshes the small "23.4°" readout on each source-list row.
+  - id: render_source_temps
+    then:
+      - lambda: |-
+          auto fmt = [](char* buf, size_t n, float v) {
+            if (std::isnan(v)) { snprintf(buf, n, "--"); }
+            else { snprintf(buf, n, "%.1f\xC2\xB0", v); }
+          };
+          char b[12];
+          fmt(b, sizeof(b), id(main_temp).state);    lv_label_set_text(id(lbl_src_main_t),    b);
+          fmt(b, sizeof(b), id(desk_temp).state);    lv_label_set_text(id(lbl_src_desk_t),    b);
+          fmt(b, sizeof(b), id(bedroom_temp).state); lv_label_set_text(id(lbl_src_bedroom_t), b);
+          // average — recompute locally so we don't rely on active_temp being current
+          float sum = 0; int n = 0;
+          auto add = [&](float v){ if (!std::isnan(v)) { sum += v; n++; } };
+          add(id(main_temp).state); add(id(desk_temp).state); add(id(bedroom_temp).state);
+          fmt(b, sizeof(b), n ? sum / n : NAN);
+          lv_label_set_text(id(lbl_src_avg_t), b);
+
+  # "Cooling / Heating / Fan / Idle" caption below the big number
+  - id: render_action_label
+    then:
+      - lambda: |-
+          const char* txt; uint32_t col;
+          switch (id(g_hvac_action)) {
+            case 1: txt = "Cooling"; col = ${col_cool}; break;
+            case 2: txt = "Heating"; col = ${col_heat}; break;
+            case 3: txt = "Fan";     col = ${col_fan};  break;
+            default: txt = (id(g_mode) == 0) ? "Off" : "Idle";
+                     col = ${col_text_dim}; break;
+          }
+          lv_label_set_text(id(action_label), txt);
+          lv_obj_set_style_text_color(id(action_label), lv_color_hex(col), LV_STATE_DEFAULT);
+
+  # Recompute g_hvac_action from compressor_running + mode and re-render.
+  # Called whenever ac_call_active or ac_state changes.
+  - id: on_hvac_action_changed
+    then:
+      - lambda: |-
+          bool active = id(ac_call_active).state;
+          if (!active) { id(g_hvac_action) = 0; }
+          else if (id(g_mode) == 4) { id(g_hvac_action) = 3; }
+          else if (id(g_cool_dir) == 1) { id(g_hvac_action) = 1; }
+          else { id(g_hvac_action) = 2; }
+      - script.execute: render_action_label
+
+  # Auto-mode direction follows the climate's thermostat_direction sensor.
+  - id: on_thermostat_direction_changed
+    then:
+      - lambda: |-
+          if (id(g_mode) != 3) return;  // only auto mode listens
+          auto s = id(ac_thermostat_direction).state;
+          if      (s == "cool") id(g_cool_dir) = 1;
+          else if (s == "heat") id(g_cool_dir) = 0;
+      - script.execute: update_arc_track
+      - script.execute: update_diff_arc
+
+  # Status bar weather glyph from the HA condition string
+  - id: render_weather_icon
+    then:
+      - lambda: |-
+          const char* g = "\U000F0590";  // default cloudy
+          auto s = id(outdoor_condition).state;
+          if      (s == "sunny")          g = "\U000F0599";  // F0599
+          else if (s == "clear-night")    g = "\U000F0594";  // F0594
+          else if (s == "partlycloudy")   g = "\U000F0595";  // F0595
+          else if (s == "cloudy")         g = "\U000F0590";  // F0590
+          else if (s == "rainy")          g = "\U000F0597";  // F0597
+          else if (s == "pouring")        g = "\U000F0596";  // F0596
+          else if (s == "snowy")          g = "\U000F0598";  // F0598
+          else if (s == "fog")            g = "\U000F0591";  // F0591
+          else if (s == "windy")          g = "\U000F059D";  // F059D
+          else if (s == "lightning"
+                || s == "lightning-rainy")g = "\U000F0593";  // F0593
+          lv_label_set_text(id(weather_icon), g);
+
+  # Idle screen-dim — covers display with semi-transparent backdrop after 30s.
+  # No backlight PWM on this board, so we dim visually rather than electrically.
+  - id: screen_dim
+    mode: restart
+    then:
+      - delay: 30s
+      - lambda: |-
+          id(g_dimmed) = true;
+          lv_obj_clear_flag(id(dim_backdrop), LV_OBJ_FLAG_HIDDEN);
+
+  - id: screen_wake
+    then:
+      - lambda: |-
+          if (id(g_dimmed)) {
+            id(g_dimmed) = false;
+            lv_obj_add_flag(id(dim_backdrop), LV_OBJ_FLAG_HIDDEN);
+          }
+      - script.execute: screen_dim
+
+# ── Boot sequence ─────────────────────────────────────────────────────────────
+esphome:
+  on_boot:
+    priority: -100
+    then:
+      # Immediate visual init — runs once LVGL has its first frame
+      - lambda: |-
+          // Block touch on display-only arcs so they don't capture drag events.
+          lv_obj_clear_flag(id(arc_current), LV_OBJ_FLAG_CLICKABLE);
+
+          // Press flash on every button: white border on press, fade out on release.
+          // Skipped on btn_power and the mode/fan/source buttons whose border is
+          // managed dynamically (the transition would conflict with the recolour).
+          static lv_style_prop_t props[] = {LV_STYLE_BORDER_COLOR, LV_STYLE_PROP_INV};
+          static lv_style_transition_dsc_t t_in, t_out;
+          lv_style_transition_dsc_init(&t_in,  props, lv_anim_path_linear,   80,  0, NULL);
+          lv_style_transition_dsc_init(&t_out, props, lv_anim_path_ease_out, 500, 0, NULL);
+          static lv_style_t s_pressed, s_default;
+          lv_style_init(&s_pressed);
+          lv_style_set_border_color(&s_pressed, lv_color_hex(${col_text_primary}));
+          lv_style_set_transition(&s_pressed, &t_in);
+          lv_style_init(&s_default);
+          lv_style_set_transition(&s_default, &t_out);
+          lv_obj_t* btns[] = { id(btn_temp_minus), id(btn_temp_plus) };
+          for (auto* b : btns) {
+            lv_obj_add_style(b, &s_default, LV_STATE_DEFAULT);
+            lv_obj_add_style(b, &s_pressed, LV_STATE_PRESSED);
+          }
+      - script.execute: apply_mode_style
+      - script.execute: render_action_label
+      - script.execute: render_fan_buttons
+      - script.execute: on_active_sensor_changed
+      - script.execute: render_setpoint_label
+      - script.execute: render_current_label
+      - script.execute: render_weather_icon
+      - script.execute: screen_dim
+
+# ── Periodic ticks ────────────────────────────────────────────────────────────
+# Status-bar refresh + active-temp readout — cheap, runs every couple seconds.
+interval:
+  - interval: 2s
+    then:
+      - lambda: |-
+          // Time
+          char tbuf[16];
+          auto t = id(ha_time).now();
+          if (t.is_valid()) {
+            t.strftime(tbuf, sizeof(tbuf), "%H:%M  %a");
+          } else {
+            snprintf(tbuf, sizeof(tbuf), "--:--");
+          }
+          lv_label_set_text(id(time_label), tbuf);
+
+          // Outdoor temperature
+          char obuf[12];
+          float ot = id(outdoor_temp).state;
+          if (std::isnan(ot)) { snprintf(obuf, sizeof(obuf), "--"); }
+          else { snprintf(obuf, sizeof(obuf), "%.0f\xC2\xB0", ot); }
+          lv_label_set_text(id(outdoor_temp_label), obuf);
+
+          // WiFi indicator: red if no IP, accent grey otherwise
+          bool online = !id(wifi_ip).state.empty();
+          lv_obj_set_style_text_color(
+            id(wifi_icon),
+            lv_color_hex(online ? ${col_text_label} : 0xCC4444),
+            LV_STATE_DEFAULT);
+          lv_label_set_text(id(wifi_icon), online ? "\U000F05A9" : "\U000F05AA");
+
+          // API indicator — same colour scheme
+          bool api_ok = api_is_connected();
+          lv_obj_set_style_text_color(
+            id(api_icon),
+            lv_color_hex(api_ok ? ${col_text_label} : 0xCC4444),
+            LV_STATE_DEFAULT);
+
+          // Update source-list temps + the small current-temp readout.
+          float at = id(active_temp).state;
+          id(g_current_temp) = at;
+          if (!std::isnan(at) && id(g_temp_max) > id(g_temp_min)) {
+            float ratio = (at - id(g_temp_min)) / (id(g_temp_max) - id(g_temp_min));
+            if (ratio < 0) ratio = 0;
+            if (ratio > 1) ratio = 1;
+            id(g_current_arc) = (int)(ratio * 100.0f);
+          }
+          lv_arc_set_value(id(arc_current), id(g_current_arc));
+      - script.execute: render_current_label
+      - script.execute: render_source_temps
+      - script.execute: update_diff_arc
+      - script.execute: render_weather_icon
+
+# ── Sync from climate state changes ───────────────────────────────────────────
+# When the climate updates externally (HA, schedule, etc.), pull setpoint/mode
+# back into UI globals and re-render. Without this the UI would drift from truth.
+climate:
+  - id: !extend ${ac_climate_id}
+    on_state:
+      - lambda: |-
+          auto& c = *id(${ac_climate_id});
+          float t = c.target_temperature;
+          if (!std::isnan(t)) {
+            id(g_setpoint) = t;
+            if (id(g_temp_max) > id(g_temp_min)) {
+              float r = (t - id(g_temp_min)) / (id(g_temp_max) - id(g_temp_min));
+              if (r < 0) r = 0; if (r > 1) r = 1;
+              id(g_setpoint_arc) = (int)(r * 100.0f);
+              lv_arc_set_value(id(arc_setpoint), id(g_setpoint_arc));
+            }
+          }
+          int new_mode;
+          switch (c.mode) {
+            case climate::CLIMATE_MODE_COOL:      new_mode = 1; break;
+            case climate::CLIMATE_MODE_HEAT:      new_mode = 2; break;
+            case climate::CLIMATE_MODE_HEAT_COOL: new_mode = 3; break;
+            case climate::CLIMATE_MODE_FAN_ONLY:  new_mode = 4; break;
+            default:                              new_mode = 0; break;
+          }
+          if (new_mode != 0) id(g_prev_mode) = new_mode;
+          id(g_mode) = new_mode;
+          switch (c.fan_mode.value_or(climate::CLIMATE_FAN_AUTO)) {
+            case climate::CLIMATE_FAN_LOW:    id(g_fan_speed) = 0; break;
+            case climate::CLIMATE_FAN_MEDIUM: id(g_fan_speed) = 1; break;
+            case climate::CLIMATE_FAN_HIGH:   id(g_fan_speed) = 2; break;
+            default:                          id(g_fan_speed) = 3; break;
+          }
+      - script.execute: render_setpoint_label
+      - script.execute: apply_mode_style
+      - script.execute: render_fan_buttons
+
+# ── LVGL ──────────────────────────────────────────────────────────────────────
+lvgl:
+  displays:
+    - my_display
+  touchscreens:
+    - my_touch
+
+  # Theme keeps the per-button styling minimal. Most colours are set imperatively
+  # from scripts so they can react to mode/state changes.
+  theme:
+    button:
+      radius: 12
+      border_width: 2
+      border_color: ${col_panel_border}
+      bg_opa: transp
+      pad_all: 0
+      shadow_width: 0
+
+  on_idle:
+    - timeout: 30s
+      then:
+        - script.execute: screen_dim
+
+  pages:
+    - id: main_page
+      bg_color: ${col_bg}
+      bg_opa: cover
+      widgets:
+
+        # ── Status bar ────────────────────────────────────────────────────────
+        - obj:
+            id: status_bar
+            x: 0
+            y: 0
+            width: ${screen_w}
+            height: ${statusbar_h}
+            bg_color: ${col_status_bg}
+            bg_opa: cover
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            widgets:
+              - label:
+                  id: time_label
+                  align: LEFT_MID
+                  x: 16
+                  text: "--:--"
+                  text_color: ${col_text_primary}
+                  text_font: font_body
+              - label:
+                  id: weather_icon
+                  align: LEFT_MID
+                  x: 140
+                  text: "\U000F0590"  # cloudy default
+                  text_color: ${col_text_label}
+                  text_font: mdi_28
+              - label:
+                  id: outdoor_temp_label
+                  align: LEFT_MID
+                  x: 178
+                  text: "--"
+                  text_color: ${col_text_label}
+                  text_font: font_body
+              - label:
+                  id: api_icon
+                  align: RIGHT_MID
+                  x: -56
+                  text: "\U000F06A9"  # F06A9 home-assistant
+                  text_color: ${col_text_label}
+                  text_font: mdi_28
+              - label:
+                  id: wifi_icon
+                  align: RIGHT_MID
+                  x: -16
+                  text: "\U000F05A9"  # F05A9 wifi
+                  text_color: ${col_text_label}
+                  text_font: mdi_28
+
+        # ── Climate column ───────────────────────────────────────────────────
+        - obj:
+            id: climate_col
+            x: 0
+            y: ${statusbar_h}
+            width: !lambda 'return ${screen_w} - ${side_w};'
+            height: !lambda 'return ${screen_h} - ${statusbar_h};'
+            bg_opa: transp
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            widgets:
+
+              # Action caption — sits above the big number
+              - label:
+                  id: action_label
+                  align: TOP_MID
+                  y: 32
+                  text: "Off"
+                  text_color: ${col_text_dim}
+                  text_font: font_body
+                  clickable: false
+
+              # Arc nest: 5 stacked arcs with identical bbox
+              - obj:
+                  id: arc_nest
+                  align: TOP_MID
+                  y: 64
+                  width: ${arc_size}
+                  height: ${arc_size}
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  widgets:
+
+                    # Always-on background ring
+                    - arc:
+                        id: arc_bg
+                        adjustable: false
+                        min_value: 0
+                        max_value: 100
+                        value: 0
+                        width: 100%
+                        height: 100%
+                        start_angle: ${arc_start_deg}
+                        end_angle: !lambda 'return ${arc_start_deg} + ${arc_sweep_deg};'
+                        arc_color: ${col_arc_bg}
+                        arc_width: ${arc_thickness}
+                        indicator:
+                          arc_opa: 0%
+                          arc_width: ${arc_thickness}
+                        knob:
+                          bg_opa: transp
+                          border_opa: transp
+
+                    # Mode-coloured fill (direction-aware)
+                    - arc:
+                        id: arc_track
+                        adjustable: false
+                        min_value: 0
+                        max_value: 100
+                        value: 40
+                        width: 100%
+                        height: 100%
+                        start_angle: ${arc_start_deg}
+                        end_angle: !lambda 'return ${arc_start_deg} + ${arc_sweep_deg};'
+                        arc_width: 0
+                        indicator:
+                          arc_color: ${col_off}
+                          arc_width: ${arc_thickness}
+                          arc_opa: 0%
+                        knob:
+                          bg_opa: transp
+                          border_opa: transp
+
+                    # Bright accent diff segment
+                    - arc:
+                        id: arc_diff
+                        adjustable: false
+                        hidden: true
+                        min_value: 0
+                        max_value: 100
+                        value: 100
+                        start_angle: ${arc_start_deg}
+                        end_angle: !lambda 'return ${arc_start_deg} + ${arc_sweep_deg};'
+                        width: 100%
+                        height: 100%
+                        arc_width: 0
+                        indicator:
+                          arc_color: ${col_off}
+                          arc_width: ${arc_thickness}
+                        knob:
+                          bg_opa: transp
+                          border_opa: transp
+
+                    # Current-temp dot marker (display-only, touch blocked in on_boot)
+                    - arc:
+                        id: arc_current
+                        adjustable: true
+                        min_value: 0
+                        max_value: 100
+                        value: 0
+                        width: 100%
+                        height: 100%
+                        start_angle: ${arc_start_deg}
+                        end_angle: !lambda 'return ${arc_start_deg} + ${arc_sweep_deg};'
+                        arc_width: 0
+                        indicator:
+                          arc_width: ${arc_thickness}
+                          arc_opa: 0%
+                        knob:
+                          bg_color: ${col_text_dim}
+                          border_width: 0
+                          border_opa: transp
+                          pad_all: -8
+
+                    # Big setpoint number — centered, sits inside the arc bbox.
+                    # clickable: false lets touches pass through to arc_setpoint.
+                    - obj:
+                        align: CENTER
+                        y: 16
+                        width: 320
+                        height: 120
+                        bg_opa: transp
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        layout:
+                          type: FLEX
+                          flex_flow: ROW
+                          flex_align_main: CENTER
+                          flex_align_cross: END
+                        widgets:
+                          - label:
+                              id: temp_label
+                              text: "--"
+                              text_color: ${col_text_primary}
+                              text_font: font_temp_big
+                          - label:
+                              text: "°C"
+                              text_color: ${col_text_dim}
+                              text_font: font_temp_unit
+                              pad_bottom: 16
+
+                    # Current-temp readout below the big number
+                    - label:
+                        id: current_label
+                        align: CENTER
+                        y: 96
+                        text: "--"
+                        text_color: ${col_text_dim}
+                        text_font: font_small
+                        clickable: false
+
+                    # Topmost: invisible draggable knob — absorbs all touch
+                    - arc:
+                        id: arc_setpoint
+                        adjustable: true
+                        min_value: 0
+                        max_value: 100
+                        value: 40
+                        width: 100%
+                        height: 100%
+                        start_angle: ${arc_start_deg}
+                        end_angle: !lambda 'return ${arc_start_deg} + ${arc_sweep_deg};'
+                        arc_width: 0
+                        indicator:
+                          arc_width: ${arc_thickness}
+                          arc_opa: 0%
+                        knob:
+                          bg_color: ${col_text_primary}
+                          border_color: ${col_off}
+                          border_width: 4
+                          pad_all: -2
+                        on_value:
+                          then:
+                            - lambda: |-
+                                int v = (int)x;
+                                id(g_setpoint_arc) = v;
+                                float raw = v / 100.0f
+                                          * (id(g_temp_max) - id(g_temp_min))
+                                          + id(g_temp_min);
+                                id(g_setpoint) = roundf(raw / ${step_temp}f) * ${step_temp}f;
+                            - script.execute: update_arc_track
+                            - script.execute: update_diff_arc
+                            - script.execute: render_setpoint_label
+                            - script.execute: screen_wake
+                        on_release:
+                          then:
+                            - script.execute: debounce_setpoint
+
+              # ── Bottom row: minus / plus / power ─────────────────────────
+              - button:
+                  id: btn_temp_minus
+                  align: BOTTOM_LEFT
+                  x: 24
+                  y: -24
+                  width: 88
+                  height: 64
+                  on_click:
+                    then:
+                      - lambda: |-
+                          if (std::isnan(id(g_setpoint))) return;
+                          float s = id(g_setpoint) - ${step_temp}f;
+                          if (s < id(g_temp_min)) s = id(g_temp_min);
+                          id(g_setpoint) = s;
+                          id(g_setpoint_arc) = (int)((s - id(g_temp_min))
+                              / (id(g_temp_max) - id(g_temp_min)) * 100.0f);
+                          lv_arc_set_value(id(arc_setpoint), id(g_setpoint_arc));
+                      - script.execute: update_arc_track
+                      - script.execute: update_diff_arc
+                      - script.execute: render_setpoint_label
+                      - script.execute: debounce_setpoint
+                      - script.execute: screen_wake
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0374"  # F0374 minus
+                        text_font: mdi_32
+                        text_color: ${col_text_label}
+
+              - button:
+                  id: btn_temp_plus
+                  align: BOTTOM_MID
+                  x: -64
+                  y: -24
+                  width: 88
+                  height: 64
+                  on_click:
+                    then:
+                      - lambda: |-
+                          if (std::isnan(id(g_setpoint))) return;
+                          float s = id(g_setpoint) + ${step_temp}f;
+                          if (s > id(g_temp_max)) s = id(g_temp_max);
+                          id(g_setpoint) = s;
+                          id(g_setpoint_arc) = (int)((s - id(g_temp_min))
+                              / (id(g_temp_max) - id(g_temp_min)) * 100.0f);
+                          lv_arc_set_value(id(arc_setpoint), id(g_setpoint_arc));
+                      - script.execute: update_arc_track
+                      - script.execute: update_diff_arc
+                      - script.execute: render_setpoint_label
+                      - script.execute: debounce_setpoint
+                      - script.execute: screen_wake
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0417"  # F0417 plus
+                        text_font: mdi_32
+                        text_color: ${col_text_label}
+
+              # Big power button — toggles between off and last-used mode
+              - button:
+                  id: btn_power
+                  align: BOTTOM_RIGHT
+                  x: -24
+                  y: -24
+                  width: 96
+                  height: 64
+                  on_click:
+                    then:
+                      - lambda: |-
+                          int next;
+                          if (id(g_mode) == 0) {
+                            next = id(g_prev_mode);
+                          } else {
+                            id(g_prev_mode) = id(g_mode);
+                            next = 0;
+                          }
+                          id(g_mode) = next;
+                      - script.execute: apply_mode_style
+                      - climate.control:
+                          id: ${ac_climate_id}
+                          mode: !lambda |-
+                            switch (id(g_mode)) {
+                              case 1: return CLIMATE_MODE_COOL;
+                              case 2: return CLIMATE_MODE_HEAT;
+                              case 3: return CLIMATE_MODE_HEAT_COOL;
+                              case 4: return CLIMATE_MODE_FAN_ONLY;
+                              default: return CLIMATE_MODE_OFF;
+                            }
+                      - script.execute: screen_wake
+                  widgets:
+                    - label:
+                        id: icon_power
+                        align: CENTER
+                        text: "\U000F0425"  # F0425 power
+                        text_font: mdi_32
+                        text_color: ${col_text_dim}
+
+        # ── Side column ──────────────────────────────────────────────────────
+        - obj:
+            id: side_col
+            x: !lambda 'return ${screen_w} - ${side_w};'
+            y: ${statusbar_h}
+            width: ${side_w}
+            height: !lambda 'return ${screen_h} - ${statusbar_h};'
+            bg_color: ${col_status_bg}
+            bg_opa: cover
+            border_width: 0
+            pad_all: 12
+            scrollable: false
+            widgets:
+
+              # — Mode row (Cool / Heat / Auto / Fan-only) ——————————————
+              - label:
+                  align: TOP_LEFT
+                  x: 4
+                  y: 0
+                  text: "MODE"
+                  text_color: ${col_text_dim}
+                  text_font: font_tiny
+              - obj:
+                  align: TOP_MID
+                  y: 18
+                  width: !lambda 'return ${side_w} - 24;'
+                  height: 56
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout:
+                    type: FLEX
+                    flex_flow: ROW
+                    flex_align_main: SPACE_BETWEEN
+                    flex_align_cross: CENTER
+                  widgets:
+                    - button:
+                        id: btn_mode_cool
+                        width: 52
+                        height: 52
+                        radius: 26
+                        on_click:
+                          then:
+                            - lambda: 'id(g_mode) = 1; id(g_prev_mode) = 1;'
+                            - script.execute: apply_mode_style
+                            - climate.control:
+                                id: ${ac_climate_id}
+                                mode: COOL
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: icon_mode_cool
+                              align: CENTER
+                              text: "\U000F0717"  # F0717 snowflake
+                              text_font: mdi_28
+                              text_color: ${col_text_dim}
+                    - button:
+                        id: btn_mode_heat
+                        width: 52
+                        height: 52
+                        radius: 26
+                        on_click:
+                          then:
+                            - lambda: 'id(g_mode) = 2; id(g_prev_mode) = 2;'
+                            - script.execute: apply_mode_style
+                            - climate.control:
+                                id: ${ac_climate_id}
+                                mode: HEAT
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: icon_mode_heat
+                              align: CENTER
+                              text: "\U000F0238"  # F0238 fire
+                              text_font: mdi_28
+                              text_color: ${col_text_dim}
+                    - button:
+                        id: btn_mode_auto
+                        width: 52
+                        height: 52
+                        radius: 26
+                        on_click:
+                          then:
+                            - lambda: 'id(g_mode) = 3; id(g_prev_mode) = 3;'
+                            - script.execute: apply_mode_style
+                            - climate.control:
+                                id: ${ac_climate_id}
+                                mode: HEAT_COOL
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: icon_mode_auto
+                              align: CENTER
+                              text: "\U000F0453"  # F0453 autorenew
+                              text_font: mdi_28
+                              text_color: ${col_text_dim}
+                    - button:
+                        id: btn_mode_fan
+                        width: 52
+                        height: 52
+                        radius: 26
+                        on_click:
+                          then:
+                            - lambda: 'id(g_mode) = 4; id(g_prev_mode) = 4;'
+                            - script.execute: apply_mode_style
+                            - climate.control:
+                                id: ${ac_climate_id}
+                                mode: FAN_ONLY
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: icon_mode_fan
+                              align: CENTER
+                              text: "\U000F0210"  # F0210 fan
+                              text_font: mdi_28
+                              text_color: ${col_text_dim}
+
+              # — Fan row (Low / Med / High / Auto) ——————————————————————
+              - label:
+                  align: TOP_LEFT
+                  x: 4
+                  y: 92
+                  text: "FAN"
+                  text_color: ${col_text_dim}
+                  text_font: font_tiny
+              - obj:
+                  align: TOP_MID
+                  y: 110
+                  width: !lambda 'return ${side_w} - 24;'
+                  height: 56
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout:
+                    type: FLEX
+                    flex_flow: ROW
+                    flex_align_main: SPACE_BETWEEN
+                    flex_align_cross: CENTER
+                  widgets:
+                    - button:
+                        id: btn_fan_low
+                        width: 52
+                        height: 52
+                        radius: 26
+                        on_click:
+                          then:
+                            - lambda: 'id(g_fan_speed) = 0;'
+                            - script.execute: render_fan_buttons
+                            - climate.control:
+                                id: ${ac_climate_id}
+                                fan_mode: LOW
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: icon_fan_low
+                              align: CENTER
+                              text: "\U000F0BAF"  # F0BAF fan-speed-1
+                              text_font: mdi_28
+                              text_color: ${col_text_dim}
+                    - button:
+                        id: btn_fan_med
+                        width: 52
+                        height: 52
+                        radius: 26
+                        on_click:
+                          then:
+                            - lambda: 'id(g_fan_speed) = 1;'
+                            - script.execute: render_fan_buttons
+                            - climate.control:
+                                id: ${ac_climate_id}
+                                fan_mode: MEDIUM
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: icon_fan_med
+                              align: CENTER
+                              text: "\U000F0BB0"  # F0BB0 fan-speed-2
+                              text_font: mdi_28
+                              text_color: ${col_text_dim}
+                    - button:
+                        id: btn_fan_high
+                        width: 52
+                        height: 52
+                        radius: 26
+                        on_click:
+                          then:
+                            - lambda: 'id(g_fan_speed) = 2;'
+                            - script.execute: render_fan_buttons
+                            - climate.control:
+                                id: ${ac_climate_id}
+                                fan_mode: HIGH
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: icon_fan_high
+                              align: CENTER
+                              text: "\U000F0BB1"  # F0BB1 fan-speed-3
+                              text_font: mdi_28
+                              text_color: ${col_text_dim}
+                    - button:
+                        id: btn_fan_auto
+                        width: 52
+                        height: 52
+                        radius: 26
+                        on_click:
+                          then:
+                            - lambda: 'id(g_fan_speed) = 3;'
+                            - script.execute: render_fan_buttons
+                            - climate.control:
+                                id: ${ac_climate_id}
+                                fan_mode: AUTO
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: icon_fan_auto
+                              align: CENTER
+                              text: "\U000F171D"  # F171D fan-auto
+                              text_font: mdi_28
+                              text_color: ${col_text_dim}
+
+              # — Source picker (Main / Desk / Bedroom / Average) ——————
+              - label:
+                  align: TOP_LEFT
+                  x: 4
+                  y: 184
+                  text: "SOURCE"
+                  text_color: ${col_text_dim}
+                  text_font: font_tiny
+              - obj:
+                  align: TOP_MID
+                  y: 202
+                  width: !lambda 'return ${side_w} - 24;'
+                  height: 200
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout:
+                    type: FLEX
+                    flex_flow: COLUMN
+                    pad_row: 6
+                  widgets:
+
+                    - button: &src_row
+                        id: btn_src_main
+                        width: 100%
+                        height: 44
+                        radius: 8
+                        on_click:
+                          then:
+                            - select.set: { id: thermostat_sensor_select, option: "Main" }
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: lbl_src_main
+                              align: LEFT_MID
+                              x: 12
+                              text: "Main"
+                              text_font: font_body
+                              text_color: ${col_text_label}
+                          - label:
+                              id: lbl_src_main_t
+                              align: RIGHT_MID
+                              x: -12
+                              text: "--"
+                              text_font: font_body
+                              text_color: ${col_text_label}
+
+                    - button:
+                        <<: *src_row
+                        id: btn_src_desk
+                        on_click:
+                          then:
+                            - select.set: { id: thermostat_sensor_select, option: "Desk" }
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: lbl_src_desk
+                              align: LEFT_MID
+                              x: 12
+                              text: "Desk"
+                              text_font: font_body
+                              text_color: ${col_text_label}
+                          - label:
+                              id: lbl_src_desk_t
+                              align: RIGHT_MID
+                              x: -12
+                              text: "--"
+                              text_font: font_body
+                              text_color: ${col_text_label}
+
+                    - button:
+                        <<: *src_row
+                        id: btn_src_bedroom
+                        on_click:
+                          then:
+                            - select.set: { id: thermostat_sensor_select, option: "Bedroom" }
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: lbl_src_bedroom
+                              align: LEFT_MID
+                              x: 12
+                              text: "Bedroom"
+                              text_font: font_body
+                              text_color: ${col_text_label}
+                          - label:
+                              id: lbl_src_bedroom_t
+                              align: RIGHT_MID
+                              x: -12
+                              text: "--"
+                              text_font: font_body
+                              text_color: ${col_text_label}
+
+                    - button:
+                        <<: *src_row
+                        id: btn_src_avg
+                        on_click:
+                          then:
+                            - select.set: { id: thermostat_sensor_select, option: "Average" }
+                            - script.execute: screen_wake
+                        widgets:
+                          - label:
+                              id: lbl_src_avg
+                              align: LEFT_MID
+                              x: 12
+                              text: "Average"
+                              text_font: font_body
+                              text_color: ${col_text_label}
+                          - label:
+                              id: lbl_src_avg_t
+                              align: RIGHT_MID
+                              x: -12
+                              text: "--"
+                              text_font: font_body
+                              text_color: ${col_text_label}
+
+        # ── Dim backdrop ─────────────────────────────────────────────────────
+        # Drawn last so it's on top. Semi-opaque overlay that fades the UI when
+        # the device has been idle. Tapping it triggers screen_wake (via the
+        # on_touch handler in the device config) and then this hides itself.
+        - obj:
+            id: dim_backdrop
+            hidden: true
+            x: 0
+            y: 0
+            width: ${screen_w}
+            height: ${screen_h}
+            bg_color: 0x000000
+            bg_opa: 70%
+            border_width: 0
+            pad_all: 0
+            on_click:
+              then:
+                - script.execute: screen_wake

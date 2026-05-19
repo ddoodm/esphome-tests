@@ -1,0 +1,342 @@
+# AC Wall Controller
+# Waveshare ESP32-S3-Touch-LCD-4.3 (800×480 RGB IPS, GT911 touch, CH422G expander)
+# Hosts the Actron B812 climate AND its own LVGL UI (landscape).
+#
+# Hardware blocks copied from waveshare-touch-4-3.yaml; the only difference
+# is rotation: 0 (native landscape) so 800×480 is what LVGL sees.
+#
+# UI is split into a separate package for iteration: deinyon-wall-controller-ui.yml
+
+substitutions:
+  name: ac-wall-controller
+  friendly_name: "AC Wall Controller"
+
+  # ── Climate config ──────────────────────────────────────────────────────────
+  # IDs referenced by the UI package — keep in sync with the UI substitutions.
+  ac_climate_id: ac_climate
+  ac_min_temp: "16.0"
+  ac_max_temp: "30.0"
+
+  # ── Sensor source indices (used by the active_temp template + select) ──────
+  sensor_main:    "0"
+  sensor_desk:    "1"
+  sensor_bedroom: "2"
+  sensor_average: "3"
+
+  # ── Home Assistant entity IDs ──────────────────────────────────────────────
+  ha_desk_temp:    sensor.desk_temp_sensor_atc_a199_temperature
+  ha_bedroom_temp: sensor.bedroom_temp_sensor_atc_dd1b_temperature
+  ha_weather:      weather.forecast_home
+
+external_components:
+  - source: github://ddoodm/esphome-actron-b812@main
+    components: [actron_b812]
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  platformio_options:
+    build_flags: "-DBOARD_HAS_PSRAM"
+    board_build.arduino.memory_type: qio_opi
+    board_build.flash_mode: dio
+    board_upload.maximum_ram_size: 524288
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  cpu_frequency: 240MHz
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_ESPTOOLPY_FLASHSIZE_16MB: "y"
+      CONFIG_ESPTOOLPY_FLASHMODE_QIO: "y"
+      CONFIG_ESPTOOLPY_FLASHFREQ_80M: "y"
+      CONFIG_SPIRAM_MODE_OCT: "y"
+      CONFIG_LV_MEM_CUSTOM: "y"
+      CONFIG_LV_MEMCPY_MEMSET_STD: "y"
+      CONFIG_LV_ATTRIBUTE_FAST_MEM: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  hardware_uart: UART0
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name}"
+
+captive_portal:
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+# ── AC transmitter ────────────────────────────────────────────────────────────
+remote_transmitter:
+  id: ac_tx
+  pin: GPIO6
+  carrier_duty_percent: 100%
+
+# ── I²C ───────────────────────────────────────────────────────────────────────
+# Shared bus: CH422G (0x24), GT911 (0x5D/0x14), SHT4x (0x44).
+i2c:
+  id: bus_a
+  sda: GPIO8
+  scl: GPIO9
+  scan: true
+  frequency: 400kHz
+
+ch422g:
+  - id: ch422g_hub
+
+# ── Sensors ───────────────────────────────────────────────────────────────────
+sensor:
+  # Onboard SHT41 — "Main" room temperature/humidity sensor on the wall controller
+  - platform: sht4x
+    i2c_id: bus_a
+    address: 0x44
+    update_interval: 30s
+    temperature:
+      id: main_temp
+      name: "Main Temperature"
+      accuracy_decimals: 2
+      on_value:
+        then:
+          - script.execute:
+              id: maybe_update_active_temp
+              sensor_index: ${sensor_main}
+    humidity:
+      id: main_humidity
+      name: "Main Humidity"
+      accuracy_decimals: 1
+
+  # Pulled from Home Assistant
+  - platform: homeassistant
+    id: desk_temp
+    entity_id: ${ha_desk_temp}
+    accuracy_decimals: 2
+    on_value:
+      then:
+        - script.execute:
+            id: maybe_update_active_temp
+            sensor_index: ${sensor_desk}
+
+  - platform: homeassistant
+    id: bedroom_temp
+    entity_id: ${ha_bedroom_temp}
+    accuracy_decimals: 2
+    on_value:
+      then:
+        - script.execute:
+            id: maybe_update_active_temp
+            sensor_index: ${sensor_bedroom}
+
+  # Outdoor temp from the weather entity's `temperature` attribute
+  - platform: homeassistant
+    id: outdoor_temp
+    entity_id: ${ha_weather}
+    attribute: temperature
+    accuracy_decimals: 1
+
+  # The sensor that's actually wired into the climate's thermostat.
+  # Re-renders whenever maybe_update_active_temp triggers it.
+  - platform: template
+    id: active_temp
+    name: "Active Temperature"
+    lambda: |-
+      switch (id(active_sensor_idx)) {
+        case ${sensor_main}:    return id(main_temp).state;
+        case ${sensor_desk}:    return id(desk_temp).state;
+        case ${sensor_bedroom}: return id(bedroom_temp).state;
+        default: { // average — sum non-NaN sensors
+          float sum = 0; int count = 0;
+          auto add = [&](float v) { if (!std::isnan(v)) { sum += v; count++; } };
+          add(id(main_temp).state);
+          add(id(desk_temp).state);
+          add(id(bedroom_temp).state);
+          if (count == 0) return NAN;
+          return sum / count;
+        }
+      }
+    update_interval: never
+
+  - platform: wifi_signal
+    id: wifi_signal_db
+    update_interval: 30s
+    internal: true
+
+text_sensor:
+  # State of the weather entity (e.g. "sunny", "cloudy", "rainy")
+  - platform: homeassistant
+    id: outdoor_condition
+    entity_id: ${ha_weather}
+
+  - platform: wifi_info
+    ip_address:
+      id: wifi_ip
+      internal: true
+
+# ── Active sensor selection ──────────────────────────────────────────────────
+# Restored across reboots so the device boots with the last-used sensor.
+globals:
+  - id: active_sensor_idx
+    type: int
+    restore_value: true
+    initial_value: ${sensor_main}
+
+script:
+  # Only re-render active_temp if the changed sensor is the one being used
+  # (or if we're in average mode, where every sensor change matters).
+  - id: maybe_update_active_temp
+    parameters:
+      sensor_index: int
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(active_sensor_idx) == sensor_index
+                  || id(active_sensor_idx) == ${sensor_average};
+          then:
+            - component.update: active_temp
+
+# Exposed to HA so source can be changed from either side.
+# UI side-panel buttons call select.set on this.
+select:
+  - platform: template
+    name: "Thermostat Sensor"
+    id: thermostat_sensor_select
+    optimistic: true
+    restore_value: true
+    options:
+      - "Main"
+      - "Desk"
+      - "Bedroom"
+      - "Average"
+    initial_option: "Main"
+    set_action:
+      - globals.set:
+          id: active_sensor_idx
+          value: !lambda |-
+            if (x == "Main")    return ${sensor_main};
+            if (x == "Desk")    return ${sensor_desk};
+            if (x == "Bedroom") return ${sensor_bedroom};
+            return ${sensor_average};
+      - component.update: active_temp
+      # Notify the UI so it can re-render highlights + the small current temp readout
+      - script.execute: on_active_sensor_changed
+
+# ── Climate ───────────────────────────────────────────────────────────────────
+climate:
+  - platform: actron_b812
+    id: ${ac_climate_id}
+    name: "Aircon"
+    transmitter_id: ac_tx
+    temperature_sensor_id: active_temp
+    hysteresis: 0.2
+    auto_deadband: 1.0
+    auto_deadband_timeout: 20min
+    compressor_cooldown: 4min
+    valve_settle_time: 40s
+    time_id: ha_time
+    compressor_running:
+      id: ac_compressor_running
+      name: "Aircon Compressor Running"
+    state:
+      id: ac_state
+      name: "Aircon State"
+    thermostat_direction:
+      id: ac_thermostat_direction
+      name: "Aircon Thermostat Direction"
+      on_value:
+        then:
+          # Auto-mode direction (cool/heat/idle) — drives diff-arc orientation
+          - script.execute: on_thermostat_direction_changed
+    protection_expires_at:
+      name: "Aircon Protection Expires At"
+    deadband_active:
+      name: "Aircon Deadband Active"
+    deadband_expires_at:
+      name: "Aircon Deadband Expires At"
+    reversing_valve:
+      name: "Aircon Reversing Valve"
+    call_active:
+      id: ac_call_active
+      name: "Aircon Call Active"
+      on_state:
+        then:
+          - script.execute: on_hvac_action_changed
+    zone_1:
+      name: "Aircon Zone 1"
+    zone_2:
+      name: "Aircon Zone 2"
+
+# ── Display ───────────────────────────────────────────────────────────────────
+# Native landscape: rotation: 0 → LVGL canvas is 800×480.
+display:
+  - platform: rpi_dpi_rgb
+    id: my_display
+    auto_clear_enabled: false
+    update_interval: never
+    color_order: RGB
+    pclk_frequency: 16MHz
+    rotation: 0
+    dimensions:
+      width: 800
+      height: 480
+    de_pin:
+      number: GPIO5
+    hsync_pin:
+      number: GPIO46
+      ignore_strapping_warning: true
+    vsync_pin:
+      number: GPIO3
+      ignore_strapping_warning: true
+    pclk_pin: GPIO7
+    pclk_inverted: false
+    reset_pin:
+      ch422g: ch422g_hub
+      number: 3
+    enable_pin:
+      ch422g: ch422g_hub
+      number: 2
+    hsync_back_porch: 16
+    hsync_front_porch: 16
+    hsync_pulse_width: 8
+    vsync_back_porch: 16
+    vsync_front_porch: 16
+    vsync_pulse_width: 8
+    data_pins:
+      red:    [1, 2, 42, 41, 40]
+      blue:   [14, 38, 18, 17, 10]
+      green:  [39, 0, 45, 48, 47, 21]
+
+touchscreen:
+  platform: gt911
+  id: my_touch
+  update_interval: 16ms
+  interrupt_pin: GPIO4
+  reset_pin:
+    ch422g: ch422g_hub
+    number: 1
+    mode: OUTPUT
+  # Native landscape: no swap needed
+  on_touch:
+    - script.execute: screen_wake
+
+# ── UI ────────────────────────────────────────────────────────────────────────
+packages:
+  ui: !include deinyon-wall-controller-ui.yml
