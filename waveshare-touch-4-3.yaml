@@ -12,6 +12,10 @@ substitutions:
   name: waveshare-touch-4-3
   friendly_name: "Waveshare Touch 4.3"
 
+external_components:
+  - source: github://ddoodm/esphome-actron-b812@main
+    components: [actron_b812]
+
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
@@ -70,6 +74,36 @@ wifi:
     ssid: "${friendly_name}"
 
 captive_portal:
+
+# AC
+
+remote_transmitter:
+  id: ac_tx
+  pin: GPIO6
+  carrier_duty_percent: 100%
+
+sensor:
+  - platform: homeassistant
+    id: desk_temp
+    entity_id: sensor.desk_temp_sensor_atc_a199_temperature
+    accuracy_decimals: 2
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    id: wifi_signal_db
+    update_interval: 30s
+    internal: true
+
+climate:
+  - platform: actron_b812
+    name: "Aircon"
+    transmitter_id: ac_tx
+    temperature_sensor_id: desk_temp
+    hysteresis: 0.2         # degrees C, optional — defaults to 0.5
+    auto_deadband: 1.0       # degrees C, the gap between heating and cooling in HEAT_COOL mode
+    auto_deadband_timeout: 20min  # deadband expires after this long idle; allows response to slow drift
+    compressor_cooldown: 4min
+    valve_settle_time: 40s
+
 
 # ─── I2C ─────────────────────────────────────────────────────────────────────
 # Shared bus for CH422G expander and GT911 touch controller.
@@ -185,14 +219,6 @@ font:
     id: font_small
     size: 16
     bpp: 4
-
-# ─── Diagnostics ─────────────────────────────────────────────────────────────
-sensor:
-  - platform: wifi_signal
-    name: "WiFi Signal"
-    id: wifi_signal_db
-    update_interval: 30s
-    internal: true
 
 text_sensor:
   - platform: wifi_info
