@@ -14,11 +14,18 @@ external_components:
   - source: github://ddoodm/esphome-actron-b812@main
     components: [actron_b812]
 
+# YD-ESP32-23 (VCC-GND Studio) with ESP32-S3-N16R8: 16MB flash, 8MB octal PSRAM.
 esp32:
-  board: esp32-c3-devkitm-1
-  variant: esp32c3
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
   framework:
     type: esp-idf
+
+# N16R8 ships with octal PSRAM; GPIO26–GPIO37 are reserved for flash/PSRAM.
+psram:
+  mode: octal
+  speed: 80MHz
 
 api:
 time:
@@ -32,17 +39,20 @@ ota:
 logger:
   level: DEBUG
 
+# Onboard WS2812 RGB LED on the YD-ESP32-S3 board is wired to GPIO48.
 light:
   - platform: esp32_rmt_led_strip
     id: status_led
     name: "Status LED"
-    pin: GPIO10
+    pin: GPIO48
     num_leds: 1
     rmt_symbols: 48
-    rgb_order: RGB
+    rgb_order: GRB
     chipset: WS2812
     default_transition_length: 300ms
 
+# GPIO5 is a free GPIO on ESP32-S3 (NOT a strapping pin — strapping pins are
+# GPIO0, GPIO3, GPIO45, GPIO46) and is clear of the octal-PSRAM range.
 remote_transmitter:
   id: ac_tx
   pin: GPIO5
