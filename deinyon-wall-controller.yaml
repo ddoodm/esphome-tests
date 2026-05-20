@@ -39,6 +39,21 @@ esphome:
 
 # ── Chip ──────────────────────────────────────────────────────────────────────
 # The P4 needs PSRAM execution + experimental IDF features for MIPI-DSI + LVGL.
+#
+# sdkconfig_options notes — keep these in sync with the crash investigation:
+#   CONFIG_LV_DRAW_BUF_ALIGN=64
+#     LVGL 9.x's PPA fill path on the P4 requires draw buffers aligned to the
+#     64-byte cache line. Without this, PPA DMA writes can clobber adjacent
+#     memory and the next dispatch through a corrupted function pointer faults
+#     as "Instruction address misaligned". The ESPHome crash dumper then
+#     reports the idle core's `esp_cpu_wait_for_intr` PC, which is misleading.
+#   CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+#     The default 5 s WDT trips inside lv_timer_handler() when a heavy first
+#     redraw of the new widget tree happens. We render this UI infrequently
+#     (only when climate state changes), so a longer WDT is acceptable as
+#     headroom and doesn't mask genuinely stuck tasks for very long.
+# We deliberately DO NOT disable PPA — software fills are too slow for this
+# widget tree on a 600×1024 panel and tripped the WDT outright.
 esp32:
   board: esp32-p4-evboard
   variant: esp32p4
@@ -46,6 +61,9 @@ esp32:
   cpu_frequency: 360MHz
   framework:
     type: esp-idf
+    sdkconfig_options:
+      CONFIG_LV_DRAW_BUF_ALIGN: "64"
+      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
     advanced:
       execute_from_psram: true
       enable_idf_experimental_features: true
@@ -290,6 +308,10 @@ climate:
     # than the verbose substates published by the `state` text sensor.
     on_state:
       then:
+        # sync_climate_to_ui mirrors climate state into the UI globals and
+        # snap-redraws the arc. on_hvac_action_changed handles the action-enum
+        # crossfade + status label.
+        - script.execute: sync_climate_to_ui
         - script.execute: on_hvac_action_changed
     compressor_running:
       id: ac_compressor_running
@@ -353,7 +375,42 @@ display:
 
 # ── Touchscreen (GT911) ───────────────────────────────────────────────────────
 # The 7B has no GT911 interrupt line wired — reset only.
-# LVGL handles touch rotation, so transforms stay at defaults.
+#
+# Coordinate spaces — read this before changing the transform:
+#
+#   The touchscreen component is rotation-unaware. It always scales its output
+#   to display_width × display_height — for this MIPI-DSI panel that's the
+#   native landscape 1024 × 600. So touch.x ∈ [0, 1024] and touch.y ∈ [0, 600]
+#   regardless of any `calibration:` you set; no calibration value can lift
+#   the y cap above 600 because display_height_ = 600.
+#
+#   LVGL renders portrait (rotation: 270 → logical 600 × 1024). Its touch
+#   listener (LVTouchListener in lvgl_esphome.cpp) ALWAYS calls
+#   rotate_coordinates() on the touchscreen output to map it into LVGL's
+#   logical portrait space. For ROTATION_270 that's:
+#       lvgl_x = display_native_height - touch.y - 1   = 599 - touch.y
+#       lvgl_y = touch.x
+#
+#   So for LVGL hit-testing to land on the right widget, the touchscreen MUST
+#   produce LANDSCAPE-NATIVE coordinates that match the physical panel — NOT
+#   pre-rotated portrait coords. If you "fix" the axis directions here by
+#   pre-rotating with swap_xy on the touchscreen, LVGL will rotate again and
+#   buttons will respond from the wrong corner even if the visual dot looks
+#   right.
+#
+#   The corollary: anything in this lambda using touch.x/touch.y directly to
+#   position an LVGL widget must do the same 599-touch.y / touch.x rotation
+#   by hand, because LVGL widget coords are in post-rotation logical space.
+#
+# Transform order (read from esphome/components/touchscreen/touchscreen.cpp;
+# the docs page is misleading about this): swap_xy → normalize (mirror is
+# folded into normalize as invert_x/y) → scale to display dimensions.
+#
+# This panel's GT911 wiring: raw_x = 0 is at the landscape RIGHT edge and
+# raw_y = 0 is at the landscape BOTTOM edge (verified from tap-corner raw
+# values). So both axes need inverting to produce landscape-native output;
+# no swap is required because the GT911 long axis (raw_x, 0..1023) already
+# matches the panel long axis (landscape X, 0..1024).
 touchscreen:
   - platform: gt911
     id: my_touch
@@ -362,10 +419,51 @@ touchscreen:
     update_interval: 50ms
     transform:
       swap_xy: false
-      mirror_x: false
-      mirror_y: false
+      mirror_x: true
+      mirror_y: true
+    # No `calibration:`: the GT911 auto-reads its raw maxes from the chip in
+    # GT911Touchscreen::setup_internal_, which is exactly what we want.
     on_touch:
       - script.execute: screen_wake
+      # ── Debug tap locator (UI package owns the widgets) ──────────────────
+      # touch.x/touch.y are in panel-native LANDSCAPE coords (range
+      # ~[0, 1024] × ~[0, 600]). Rotate to LVGL portrait coords (600 × 1024)
+      # for widget placement — same formula LVGL uses internally for hit-test.
+      - lambda: |-
+          int lvgl_x = 599 - touch.y;
+          int lvgl_y = touch.x;
+          ESP_LOGI("touch",
+                   "press lvgl=(%d, %d) ts=(%d, %d) raw=(%d, %d) id=%d",
+                   lvgl_x, lvgl_y, touch.x, touch.y,
+                   touch.x_raw, touch.y_raw, touch.id);
+      - lvgl.widget.update:
+          id: touch_dot
+          hidden: false
+          x: !lambda 'return (599 - touch.y) - 15;'
+          y: !lambda 'return touch.x - 15;'
+      - lvgl.label.update:
+          id: coord_label
+          text: !lambda |-
+            char buf[48];
+            snprintf(buf, sizeof(buf), "lvgl=%d,%d ts=%d,%d",
+                     599 - touch.y, touch.x, touch.x, touch.y);
+            return std::string(buf);
+    on_release:
+      - lambda: |-
+          id(tap_counter) += 1;
+          ESP_LOGI("touch", "release (taps=%d)", id(tap_counter));
+      - lvgl.label.update:
+          id: tap_count_label
+          text: !lambda |-
+            char buf[32];
+            snprintf(buf, sizeof(buf), "Taps: %d", id(tap_counter));
+            return std::string(buf);
+      # Keep the dot visible briefly so quick taps remain visible,
+      # then hide it. Use a one-shot interval-equivalent via delay+update.
+      - delay: 250ms
+      - lvgl.widget.update:
+          id: touch_dot
+          hidden: true
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 packages:

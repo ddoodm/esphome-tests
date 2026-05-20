@@ -45,6 +45,42 @@ touchscreen:
   - platform: sdl
     id: my_touch
     display: my_display
+    # Mirror the device touch handler so the debug overlay works on host.
+    # See deinyon-wall-controller.yaml for the full coordinate-space rationale:
+    # the SDL window is 1024×600 (landscape), LVGL renders portrait (rotation
+    # 270 → 600×1024), and the touchscreen output is in the SDL window's
+    # native coords. Rotate to LVGL portrait when placing widgets.
+    on_touch:
+      - lambda: |-
+          int lvgl_x = 599 - touch.y;
+          int lvgl_y = touch.x;
+          ESP_LOGI("touch",
+                   "press lvgl=(%d, %d) ts=(%d, %d) id=%d",
+                   lvgl_x, lvgl_y, touch.x, touch.y, touch.id);
+      - lvgl.widget.update:
+          id: touch_dot
+          hidden: false
+          x: !lambda 'return (599 - touch.y) - 15;'
+          y: !lambda 'return touch.x - 15;'
+      - lvgl.label.update:
+          id: coord_label
+          text: !lambda |-
+            char buf[48];
+            snprintf(buf, sizeof(buf), "lvgl=%d,%d ts=%d,%d",
+                     599 - touch.y, touch.x, touch.x, touch.y);
+            return std::string(buf);
+    on_release:
+      - lambda: 'id(tap_counter) += 1;'
+      - lvgl.label.update:
+          id: tap_count_label
+          text: !lambda |-
+            char buf[32];
+            snprintf(buf, sizeof(buf), "Taps: %d", id(tap_counter));
+            return std::string(buf);
+      - delay: 250ms
+      - lvgl.widget.update:
+          id: touch_dot
+          hidden: true
 
 # ── Stub backlight ────────────────────────────────────────────────────────────
 # Mirrors the real LEDC output so screen_wake and future brightness controls compile.
@@ -204,6 +240,7 @@ binary_sensor:
     lambda: return false;
     on_state:
       then:
+        - script.execute: sync_climate_to_ui
         - script.execute: on_hvac_action_changed
 
 # ── UI package ────────────────────────────────────────────────────────────────

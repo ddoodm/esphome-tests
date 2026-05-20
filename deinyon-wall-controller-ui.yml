@@ -1,22 +1,152 @@
-# AC Wall Controller — LVGL UI (PLACEHOLDER)
+# AC Wall Controller — LVGL UI
 #
-# Real UI will be rewritten from scratch. This file exists only to:
-#   1. Provide a minimal LVGL page so the display has something to show.
-#   2. Stub the scripts that deinyon-wall-controller.yaml calls
-#      (screen_wake, on_active_sensor_changed, on_thermostat_direction_changed,
-#       on_hvac_action_changed) so the main config compiles.
+# Panel native is 1024×600 landscape; LVGL rotation: 270 gives portrait 600×1024.
 #
-# Panel native is 1024×600 landscape; LVGL rotation: 90 gives portrait 600×1024.
+# ── Arc widget (top of screen) ────────────────────────────────────────────────
+# Multi-layer arc ported from deinyon-ac-remote-ui.yml. Five stacked arcs:
+#   arc_bg       — permanent dark grey ring (always the full visible span)
+#   arc_track    — mode-coloured fill from arc_start to setpoint (heat dir)
+#                  or from setpoint to arc_end (cool dir) — direction-aware
+#   arc_diff     — bright accent for the gap between current and setpoint
+#   arc_current  — small dot marker for current room temperature
+#   arc_setpoint — draggable knob for target temperature
+#
+# Arc value 0–100 maps linearly to g_temp_min … g_temp_max.
+# Visible arc segment: ${arc_start_deg} → ${arc_end_deg} (clockwise).
+# LVGL angle convention: 0° = right, 90° = down, 270° = up.
 
 substitutions:
-  # Logical (post-rotation) screen geometry — referenced by future widgets.
+  # Logical (post-rotation) screen geometry.
   screen_w: "600"
   screen_h: "1024"
 
-# ── Stub scripts ──────────────────────────────────────────────────────────────
-# Referenced by the main config's touchscreen, select, and climate handlers.
-# Keep these as no-ops until the real UI is wired up.
+  # ── Arc geometry ────────────────────────────────────────────────────────────
+  # Change `arc_span_deg` (and keep start/end in sync) to tune the arc width.
+  # Defaults: 120° span centred on the top → opens downward like an arch (⌒).
+  arc_span_deg:   "120"
+  arc_center_deg: "270"
+  arc_start_deg:  "210"     # = arc_center_deg − arc_span_deg / 2
+  arc_end_deg:    "330"     # = arc_center_deg + arc_span_deg / 2
+  arc_size:       "500"     # bounding-box edge length (arc renders inside this square)
+  arc_y:          "30"      # top margin from the screen edge
+  arc_stroke_px:  "28"      # ring stroke width
+
+  # ── +/− button geometry ─────────────────────────────────────────────────────
+  # Buttons sit in a flex row below the arc; flex handles horizontal spacing.
+  btn_size:       "120"
+  btn_radius:     "60"      # = btn_size / 2
+  btn_row_y:      "600"     # vertical offset of the button row
+  btn_row_pad_h:  "60"      # left/right inset of the button row inside the screen
+
+# ── Globals ───────────────────────────────────────────────────────────────────
+globals:
+  # Setpoint state — both the temperature (°C) and the matching 0–100 arc value
+  # are tracked because the arc widget speaks in arc units, not temperature.
+  - id: g_setpoint
+    type: float
+    initial_value: 'NAN'        # NAN until climate sync; label shows "--"
+  - id: g_setpoint_arc
+    type: int
+    initial_value: '30'         # arbitrary mid-range; replaced on first sync
+  - id: g_current_arc
+    type: int
+    initial_value: '20'
+  - id: g_current_temp
+    type: float
+    initial_value: 'NAN'
+
+  # Visual temperature limits — initialised from the climate's min/max substitutions
+  # so the arc value ↔ temperature mapping stays in sync with the climate component.
+  - id: g_temp_min
+    type: float
+    initial_value: '${ac_min_temp}'
+  - id: g_temp_max
+    type: float
+    initial_value: '${ac_max_temp}'
+
+  # Mode selector: 0=off 1=cool 2=heat 3=auto 4=fan
+  # Default cool so the arc has colour before climate state is first synced.
+  - id: g_mode
+    type: int
+    initial_value: '1'
+
+  # Thermostat direction for the diff arc: 0=heat dir, 1=cool dir.
+  # Cool mode → always 1. Heat mode → always 0.
+  # Auto (heat_cool) → driven by climate.thermostat_direction sensor.
+  - id: g_cool_dir
+    type: int
+    initial_value: '1'
+
+  # Current accent hex (matches g_mode); cached so lambdas don't repeat the switch.
+  - id: g_accent_hex
+    type: uint32_t
+    initial_value: '0x33AAFF'
+
+  # ── Debug: tap counter ─────────────────────────────────────────────────────
+  # Incremented from the touchscreen on_release trigger in the main config.
+  - id: tap_counter
+    type: int
+    initial_value: '0'
+    restore_value: false
+
+# ── Fonts ─────────────────────────────────────────────────────────────────────
+font:
+  - file: "gfonts://Roboto"
+    id: roboto_setpoint
+    size: 96
+    # Includes '-' so the placeholder "--" doesn't hit a missing-glyph path.
+    glyphs: "0123456789.-"
+  - file: "gfonts://Roboto"
+    id: roboto_unit
+    size: 36
+    glyphs: "°C"
+  - file: "gfonts://Roboto"
+    id: roboto_current
+    size: 28
+    glyphs: "0123456789.-°C"
+  - file: "gfonts://Roboto"
+    id: roboto_action
+    size: 28
+    # Unique chars from {Cooling, Heating, Idle, Fan} — duplicates not allowed.
+    glyphs: "ColingHeatIdF"
+  # MDI font for the placeholder +/− glyphs; will be replaced with images later.
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: mdi_btn
+    size: 48
+    bpp: 4
+    glyphs:
+      - "\U000F0374"  # mdi:minus
+      - "\U000F0417"  # mdi:plus
+  # Tiny full-ASCII font for the debug overlay (coordinates, tap counter).
+  # Roboto / Montserrat from gfonts would also work but the built-in saves space.
+  - file: "gfonts://Roboto"
+    id: roboto_debug
+    size: 16
+    glyphs: " =0123456789xyTaps:"
+
+# ── Boot init ─────────────────────────────────────────────────────────────────
+# Clears the touch flag on arc_current (display-only dot) and applies initial
+# styling so the arc renders with mode colours from the first frame.
+# Default on_boot priority (no explicit value) matches deinyon-ac-remote-ui.yml
+# and runs after LVGL has finished setting up the widget tree.
+esphome:
+  on_boot:
+    then:
+      - lambda: |-
+          lv_obj_clear_flag(id(arc_current), LV_OBJ_FLAG_CLICKABLE);
+      # sync_climate_to_ui chains into apply_mode_style + label renderers,
+      # so a single call here primes everything. PPA is disabled at the
+      # sdkconfig level (see deinyon-wall-controller.yaml comments) so the
+      # style/widget repaints triggered downstream are safe.
+      - script.execute: sync_climate_to_ui
+
+# ── Scripts ───────────────────────────────────────────────────────────────────
+# Convention: any script that updates g_setpoint_arc or g_current_arc should
+# follow up with update_arc_track + update_diff_arc (or call
+# animate_setpoint_to_target which does both with smooth animations).
 script:
+  # Existing stubs — wired from deinyon-wall-controller.yaml; expanded as
+  # the rest of the UI lands.
   - id: screen_wake
     then:
       - lambda: 'return;'
@@ -31,34 +161,384 @@ script:
 
   - id: on_hvac_action_changed
     then:
-      # Cross-fade the four stacked background images. Driven by the climate's
-      # `action` enum (the same signal HA reports as `hvac_action`), so transient
-      # substates like heat_valve_hold / valve_settling / comp_cooldown stay on
-      # `idle` — the heat backdrop only shows when actually heating.
+      # Cross-fade the four stacked background images AND refresh the action
+      # label in one place — both are driven by the climate's `action` enum.
       #
       # Dedupe: climate.on_state fires on every publish (including current-temp
-      # updates), so we early-out unless the action enum actually changed.
-      # This also avoids retriggering lv_obj_fade_in/out mid-animation — those
-      # helpers hard-set the start value to TRANSP/COVER, so re-firing during a
-      # crossfade would snap the widget to black before fading back in.
+      # updates), so we early-out unless the action enum actually changed. This
+      # also avoids retriggering lv_obj_fade_in/out mid-animation — those helpers
+      # hard-set the start opacity, so re-firing during a crossfade would snap
+      # the widget back to TRANSP before fading in again.
       - lambda: |-
           static climate::ClimateAction last_action = climate::CLIMATE_ACTION_OFF;
           auto action = id(${ac_climate_id}).action;
           if (action == last_action) return;
           last_action = action;
+          ESP_LOGI("ui", "on_hvac_action_changed: action=%d", (int)action);
 
           lv_obj_t *target;
+          const char *label_text;
+          uint32_t    label_color;
           switch (action) {
-            case climate::CLIMATE_ACTION_HEATING: target = id(bg_heat); break;
-            case climate::CLIMATE_ACTION_COOLING: target = id(bg_cool); break;
-            case climate::CLIMATE_ACTION_FAN:     target = id(bg_fan);  break;
-            default:                              target = id(bg_idle); break;
+            case climate::CLIMATE_ACTION_HEATING:
+              target = id(bg_heat);
+              label_text  = "Heating";
+              label_color = 0xFF6622;
+              break;
+            case climate::CLIMATE_ACTION_COOLING:
+              target = id(bg_cool);
+              label_text  = "Cooling";
+              label_color = 0x33AAFF;
+              break;
+            case climate::CLIMATE_ACTION_FAN:
+              target = id(bg_fan);
+              label_text  = "Fan";
+              label_color = 0x00D9A3;
+              break;
+            default:
+              target = id(bg_idle);
+              label_text  = "Idle";
+              label_color = 0x555555;
+              break;
           }
           lv_obj_t *bgs[] = { id(bg_idle), id(bg_heat), id(bg_cool), id(bg_fan) };
           for (auto *bg : bgs) {
             if (bg == target) lv_obj_fade_in(bg, 500, 0);
             else              lv_obj_fade_out(bg, 500, 0);
           }
+          lv_label_set_text(id(action_label), label_text);
+          lv_obj_set_style_text_color(id(action_label),
+                                      lv_color_hex(label_color),
+                                      LV_STATE_DEFAULT);
+
+  # Pulls fresh state from the climate component into the UI globals and
+  # snap-redraws the arc + labels. Fires on boot AND on every climate publish.
+  # apply_mode_style is included here so mode changes (heat/cool/off/auto/fan)
+  # from HA repaint the arc colour immediately — this is safe with PPA off.
+  # User-initiated setpoint changes use animate_setpoint_to_target for the
+  # smooth tween; this snap path is for external sync.
+  - id: sync_climate_to_ui
+    then:
+      - lambda: |-
+          auto &c = *id(${ac_climate_id});
+          auto traits = c.get_traits();
+          id(g_temp_min) = traits.get_visual_min_temperature();
+          id(g_temp_max) = traits.get_visual_max_temperature();
+          float span = id(g_temp_max) - id(g_temp_min);
+          if (span < 1.0f) span = 10.0f;   // safety against bogus traits
+
+          auto to_arc = [&](float t) -> int {
+            int v = (int)((t - id(g_temp_min)) / span * 100.0f);
+            if (v < 0)   v = 0;
+            if (v > 100) v = 100;
+            return v;
+          };
+
+          if (!std::isnan(c.target_temperature)) {
+            id(g_setpoint)     = c.target_temperature;
+            id(g_setpoint_arc) = to_arc(c.target_temperature);
+          }
+          if (!std::isnan(c.current_temperature)) {
+            id(g_current_temp) = c.current_temperature;
+            id(g_current_arc)  = to_arc(c.current_temperature);
+          }
+
+          // Map climate.mode → g_mode (UI's internal enum).
+          int new_mode;
+          switch (c.mode) {
+            case climate::CLIMATE_MODE_COOL:      new_mode = 1; break;
+            case climate::CLIMATE_MODE_HEAT:      new_mode = 2; break;
+            case climate::CLIMATE_MODE_HEAT_COOL: new_mode = 3; break;
+            case climate::CLIMATE_MODE_FAN_ONLY:  new_mode = 4; break;
+            default:                              new_mode = 0; break;
+          }
+          id(g_mode) = new_mode;
+          // Cool/heat/fan/off have deterministic direction. Auto (3) is owned
+          // by on_thermostat_direction_changed.
+          if (new_mode == 1)      id(g_cool_dir) = 1;
+          else if (new_mode != 3) id(g_cool_dir) = 0;
+
+          ESP_LOGI("ui", "sync: mode=%d sp=%.1f cur=%.1f arc_sp=%d arc_cur=%d",
+                   new_mode, id(g_setpoint), id(g_current_temp),
+                   id(g_setpoint_arc), id(g_current_arc));
+      # apply_mode_style chains into update_arc_track + update_diff_arc.
+      - script.execute: apply_mode_style
+      - script.execute: update_arc_current
+      - script.execute: render_setpoint_label
+      - script.execute: render_current_label
+
+  # ── Label renderers ────────────────────────────────────────────────────────
+  - id: render_setpoint_label
+    then:
+      - lambda: |-
+          if (std::isnan(id(g_setpoint))) {
+            lv_label_set_text(id(temp_label), "--");
+          } else {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%.1f", id(g_setpoint));
+            lv_label_set_text(id(temp_label), buf);
+          }
+
+  - id: render_current_label
+    then:
+      - lambda: |-
+          if (std::isnan(id(g_current_temp))) {
+            lv_label_set_text(id(current_label), "--");
+          } else {
+            char buf[12];
+            snprintf(buf, sizeof(buf), "%.1f\xC2\xB0""C", id(g_current_temp));
+            lv_label_set_text(id(current_label), buf);
+          }
+
+  # ── Arc redraw helpers ─────────────────────────────────────────────────────
+  # arc_track fill direction depends on g_cool_dir:
+  #   Heat dir → indicator fills arc_start → setpoint
+  #   Cool dir → indicator fills setpoint → arc_end
+  - id: update_arc_track
+    then:
+      - lambda: |-
+          lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_value);
+          lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+          if (id(g_cool_dir) == 1) {
+            int ang = (int)(${arc_start_deg} + id(g_setpoint_arc) / 100.0f * ${arc_span_deg});
+            lv_arc_set_bg_start_angle(id(arc_track), ang);
+            lv_arc_set_bg_end_angle(id(arc_track), ${arc_end_deg});
+            lv_arc_set_value(id(arc_track), 100);
+          } else {
+            lv_arc_set_bg_start_angle(id(arc_track), ${arc_start_deg});
+            lv_arc_set_bg_end_angle(id(arc_track), ${arc_end_deg});
+            lv_arc_set_value(id(arc_track), id(g_setpoint_arc));
+          }
+
+  # arc_diff: bright accent for the gap between current and setpoint.
+  # Hidden when off, or when the gap doesn't exist in the active direction.
+  - id: update_diff_arc
+    then:
+      - lambda: |-
+          if (id(g_mode) == 0) {
+            lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+            return;
+          }
+          bool show;
+          int diff_start, diff_end;
+          if (id(g_cool_dir) == 1) {
+            // Cool: room warmer than setpoint → highlight setpoint → current
+            show       = (id(g_current_arc) > id(g_setpoint_arc));
+            diff_start = (int)(${arc_start_deg} + id(g_setpoint_arc) / 100.0f * ${arc_span_deg});
+            diff_end   = (int)(${arc_start_deg} + id(g_current_arc)  / 100.0f * ${arc_span_deg});
+          } else {
+            // Heat: setpoint above room → highlight current → setpoint
+            show       = (id(g_setpoint_arc) > id(g_current_arc));
+            diff_start = (int)(${arc_start_deg} + id(g_current_arc)  / 100.0f * ${arc_span_deg});
+            diff_end   = (int)(${arc_start_deg} + id(g_setpoint_arc) / 100.0f * ${arc_span_deg});
+          }
+          if (show) {
+            lv_arc_set_bg_start_angle(id(arc_diff), diff_start);
+            lv_arc_set_bg_end_angle(id(arc_diff),   diff_end);
+            lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+          }
+
+  # arc_current dot marker — value-only update; bg angles never change.
+  - id: update_arc_current
+    then:
+      - lambda: |-
+          lv_arc_set_value(id(arc_current), id(g_current_arc));
+
+  # ── Mode style ─────────────────────────────────────────────────────────────
+  # Single source of truth for arc colours. Called when g_mode changes.
+  # Writes g_accent_hex so other lambdas can read the active colour without
+  # repeating the mode switch.
+  - id: apply_mode_style
+    then:
+      - lambda: |-
+          lv_color_t track_col, accent_col;
+          uint32_t   accent_num;
+          bool powered = (id(g_mode) != 0);
+          switch (id(g_mode)) {
+            case 1:  // cool — blue
+              track_col  = lv_color_hex(0x003E7A);
+              accent_col = lv_color_hex(0x33AAFF);
+              accent_num = 0x33AAFF;
+              id(g_cool_dir) = 1;
+              break;
+            case 2:  // heat — orange-red
+              track_col  = lv_color_hex(0x7A2500);
+              accent_col = lv_color_hex(0xFF6622);
+              accent_num = 0xFF6622;
+              id(g_cool_dir) = 0;
+              break;
+            case 3:  // auto — peppermint (direction owned by thermostat sensor)
+              track_col  = lv_color_hex(0x006B50);
+              accent_col = lv_color_hex(0x00D9A3);
+              accent_num = 0x00D9A3;
+              break;
+            case 4:  // fan-only — silver
+              track_col  = lv_color_hex(0x333333);
+              accent_col = lv_color_hex(0x888888);
+              accent_num = 0x888888;
+              id(g_cool_dir) = 0;
+              break;
+            default: // off
+              track_col  = lv_color_hex(0x1A1A1A);
+              accent_col = lv_color_hex(0x444444);
+              accent_num = 0x444444;
+              id(g_cool_dir) = 0;
+              break;
+          }
+          id(g_accent_hex) = powered ? accent_num : 0x444444U;
+          lv_color_t active_col = lv_color_hex(id(g_accent_hex));
+
+          lv_obj_set_style_arc_opa(id(arc_track),
+                                   powered ? LV_OPA_COVER : LV_OPA_TRANSP,
+                                   LV_PART_INDICATOR);
+          if (powered)
+            lv_obj_set_style_arc_color(id(arc_track), track_col, LV_PART_INDICATOR);
+          lv_obj_set_style_arc_color(id(arc_diff), active_col, LV_PART_INDICATOR);
+          lv_obj_set_style_border_color(id(arc_setpoint), active_col, LV_PART_KNOB);
+
+          // Cancel any in-flight arc animations before redrawing
+          lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_value);
+          lv_anim_del(id(arc_track), (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+          lv_anim_del(id(arc_diff),  (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle);
+          lv_anim_del(id(arc_diff),  (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
+      - script.execute: update_arc_track
+      - script.execute: update_diff_arc
+
+  # ── Animated setpoint transition ───────────────────────────────────────────
+  # Animates the visible arcs from their current state to the targets derived
+  # from globals. Call AFTER updating g_setpoint / g_setpoint_arc so the math
+  # picks up the new target. Snapshots before-state from LVGL widget state so
+  # it stays correct regardless of how the global was changed.
+  - id: animate_setpoint_to_target
+    then:
+      - lambda: |-
+          // Snapshot the current visible state straight from the widgets so we
+          // don't depend on callers pre-stashing the previous values anywhere.
+          int32_t  prev_sp_arc   = lv_arc_get_value(id(arc_setpoint));
+          int32_t  prev_track_v  = lv_arc_get_value(id(arc_track));
+          uint16_t prev_track_a  = lv_arc_get_bg_angle_start(id(arc_track));
+          int32_t  tgt = id(g_setpoint_arc);
+          int32_t  cur = id(g_current_arc);
+
+          // Helper: arc value (0-100) → visible-segment angle, in degrees.
+          const int   start_deg = ${arc_start_deg};
+          const float span_deg  = ${arc_span_deg};
+          auto angle_of = [&](int32_t v) -> int32_t {
+            return (int32_t)(start_deg + v / 100.0f * span_deg);
+          };
+          // Helper: kick off a 200 ms ease-out tween on `obj` calling `setter`
+          // from `from` to `to` (deletes any in-flight tween for the same setter).
+          auto tween = [](lv_obj_t *obj, lv_anim_exec_xcb_t setter,
+                          int32_t from, int32_t to) {
+            lv_anim_del(obj, setter);
+            lv_anim_t a;
+            lv_anim_init(&a);
+            lv_anim_set_exec_cb(&a, setter);
+            lv_anim_set_var(&a, obj);
+            lv_anim_set_values(&a, from, to);
+            lv_anim_set_time(&a, 200);
+            lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+            lv_anim_start(&a);
+          };
+
+          // arc_setpoint knob always animates by value
+          tween(id(arc_setpoint), (lv_anim_exec_xcb_t)lv_arc_set_value,
+                prev_sp_arc, tgt);
+
+          // arc_track — direction-aware: cool animates bg_start, heat animates value
+          if (id(g_cool_dir) == 1) {
+            lv_arc_set_value(id(arc_track), 100);
+            lv_arc_set_bg_end_angle(id(arc_track), ${arc_end_deg});
+            tween(id(arc_track),
+                  (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle,
+                  (int32_t)prev_track_a, angle_of(tgt));
+          } else {
+            lv_arc_set_bg_start_angle(id(arc_track), ${arc_start_deg});
+            lv_arc_set_bg_end_angle(id(arc_track), ${arc_end_deg});
+            tween(id(arc_track),
+                  (lv_anim_exec_xcb_t)lv_arc_set_value,
+                  prev_track_v, tgt);
+          }
+
+          // arc_diff — only meaningful when powered AND the gap exists in the
+          // active direction. Otherwise hide.
+          if (id(g_mode) == 0) {
+            lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+            return;
+          }
+          if (id(g_cool_dir) == 1) {
+            // Cool: show setpoint → current when current > setpoint
+            if (cur > tgt) {
+              lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+              int32_t diff_end = angle_of(cur);
+              bool was_showing = (cur > prev_sp_arc);
+              int32_t ang_from = was_showing ? angle_of(prev_sp_arc) : diff_end;
+              int32_t ang_to   = angle_of(tgt);
+              lv_arc_set_bg_end_angle(id(arc_diff), diff_end);
+              tween(id(arc_diff),
+                    (lv_anim_exec_xcb_t)lv_arc_set_bg_start_angle,
+                    ang_from, ang_to);
+            } else {
+              lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+            }
+          } else {
+            // Heat: show current → setpoint when setpoint > current
+            if (tgt > cur) {
+              lv_obj_clear_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+              bool was_showing = (prev_track_v > cur);
+              int32_t ang_from = was_showing ? angle_of(prev_track_v) : angle_of(cur);
+              int32_t ang_to   = angle_of(tgt);
+              lv_arc_set_bg_start_angle(id(arc_diff), angle_of(cur));
+              tween(id(arc_diff),
+                    (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle,
+                    ang_from, ang_to);
+            } else {
+              lv_obj_add_flag(id(arc_diff), LV_OBJ_FLAG_HIDDEN);
+            }
+          }
+
+  # ── Stepper (shared +/− handler) ───────────────────────────────────────────
+  # Clamps to g_temp_min / g_temp_max, updates globals, animates, debounces.
+  # delta is in °C — pass +0.5 for the plus button and -0.5 for the minus button.
+  #
+  # If g_setpoint is still NAN (no climate state has been published yet) we
+  # seed it from the mid-range so the button is responsive immediately.
+  # sync_climate_to_ui will overwrite this on the next climate publish.
+  - id: step_setpoint
+    parameters:
+      delta: float
+    then:
+      - lambda: |-
+          if (std::isnan(id(g_setpoint))) {
+            id(g_setpoint) = (id(g_temp_min) + id(g_temp_max)) / 2.0f;
+          }
+          float new_sp = id(g_setpoint) + delta;
+          if (new_sp < id(g_temp_min)) new_sp = id(g_temp_min);
+          if (new_sp > id(g_temp_max)) new_sp = id(g_temp_max);
+          id(g_setpoint) = new_sp;
+          id(g_setpoint_arc) = (int)((new_sp - id(g_temp_min))
+                                  / (id(g_temp_max) - id(g_temp_min)) * 100.0f);
+          ESP_LOGI("ui", "step_setpoint delta=%.1f → setpoint=%.1f arc=%d",
+                   delta, id(g_setpoint), id(g_setpoint_arc));
+      - script.execute: animate_setpoint_to_target
+      - script.execute: render_setpoint_label
+      - script.execute: debounce_setpoint
+
+  # Debounces climate.control calls during arc drag / rapid +/− taps.
+  # Restarts the 600 ms timer on each invocation; fires once input settles.
+  - id: debounce_setpoint
+    mode: restart
+    then:
+      - delay: 600ms
+      - if:
+          condition:
+            lambda: 'return !std::isnan(id(g_setpoint));'
+          then:
+            - climate.control:
+                id: ${ac_climate_id}
+                target_temperature: !lambda 'return id(g_setpoint);'
 
 # ── Images ────────────────────────────────────────────────────────────────────
 # DEV: resized to 1/10 (60x102) for fast compile/upload while iterating.
@@ -83,7 +563,7 @@ image:
     resize: "60x102"
 
 # ── LVGL ──────────────────────────────────────────────────────────────────────
-# rotation: 270 - portrait orientation (600 wide × 1024 tall).
+# rotation: 270 — portrait orientation (600 wide × 1024 tall).
 # byte_order: little_endian is required for the P4 7B MIPI-DSI panel.
 lvgl:
   displays:
@@ -92,16 +572,23 @@ lvgl:
     - my_touch
   byte_order: little_endian
   rotation: 270
-  buffer_size: 25%
+  # buffer_size is the per-flush LVGL render buffer. At 25 % of a 600×1024
+  # panel each flush pushed ~300 KB through the PPA + DSI DMA, which kept
+  # lv_timer_handler() (called inline from loopTask) busy long enough to
+  # trip the task watchdog when the UI first painted. 10 % gives the
+  # renderer many smaller passes, so loopTask returns to its loop body
+  # often enough to pet the WDT.
+  buffer_size: 10%
 
   pages:
     - id: main_page
       bg_color: 0x000000
       bg_opa: cover
       widgets:
-        # Background layer: four stacked full-screen images, cross-faded by
-        # on_hvac_action_changed. Idle starts visible; the rest are transparent
-        # so the first state change fades them in.
+        # ── Background layer ───────────────────────────────────────────────────
+        # Four stacked full-screen images cross-faded by on_hvac_action_changed.
+        # Idle starts visible; the rest are transparent so the first state change
+        # fades them in.
         - image:
             id: bg_idle
             src: idle_bg
@@ -122,14 +609,317 @@ lvgl:
             src: fan_bg
             align: CENTER
             opa: TRANSP
-        # Foreground widgets — declared after the images so they sit on top.
+
+        # ── Arc widget container ───────────────────────────────────────────────
+        # Square container, centred horizontally at the top of the screen.
+        # All arcs share this container and size at 100% × 100%, so changing
+        # ${arc_size} resizes the whole stack atomically.
+        - obj:
+            align: TOP_MID
+            y: ${arc_y}
+            width: ${arc_size}
+            height: ${arc_size}
+            bg_opa: transp
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            widgets:
+
+              # Arc 0 — permanent dark-grey background ring (full visible span).
+              # Provides the grey ring independently of arc_track's indicator,
+              # which can be hidden or direction-flipped.
+              - arc:
+                  id: arc_bg
+                  adjustable: false
+                  min_value: 0
+                  max_value: 100
+                  value: 0
+                  width: 100%
+                  height: 100%
+                  start_angle: ${arc_start_deg}
+                  end_angle: ${arc_end_deg}
+                  arc_color: 0x1A1A1A
+                  arc_width: ${arc_stroke_px}
+                  indicator:
+                    arc_opa: 0%
+                    arc_width: ${arc_stroke_px}
+                  knob:
+                    bg_opa: transp
+                    border_opa: transp
+
+              # Arc 1 — mode-coloured setpoint fill (direction-aware).
+              # Main arc transparent (arc_bg provides the grey ring).
+              # Indicator opa starts at 0% (off state); apply_mode_style reveals
+              # it on power-on.
+              - arc:
+                  id: arc_track
+                  adjustable: false
+                  min_value: 0
+                  max_value: 100
+                  value: 30
+                  width: 100%
+                  height: 100%
+                  start_angle: ${arc_start_deg}
+                  end_angle: ${arc_end_deg}
+                  arc_width: 0
+                  indicator:
+                    arc_color: 0x006B50
+                    arc_width: ${arc_stroke_px}
+                    arc_opa: 0%
+                  knob:
+                    bg_opa: transp
+                    border_opa: transp
+
+              # Arc 2 — bright accent diff segment (current ↔ setpoint gap).
+              # Starts hidden; update_diff_arc / animate_setpoint_to_target
+              # show it when applicable. bg angles are written dynamically.
+              #
+              # IMPORTANT: do not initialise start_angle == end_angle. A 0°
+              # bg-arc range with an indicator value of 100 can cause LVGL's
+              # renderer to divide by (end-start), which has surfaced on the
+              # ESP32-P4 as a delayed "instruction address misaligned" fault.
+              # Initialise to the full visible span; the scripts overwrite
+              # the angles before the widget is ever un-hidden.
+              - arc:
+                  id: arc_diff
+                  adjustable: false
+                  hidden: true
+                  min_value: 0
+                  max_value: 100
+                  value: 100
+                  width: 100%
+                  height: 100%
+                  start_angle: ${arc_start_deg}
+                  end_angle: ${arc_end_deg}
+                  arc_width: 0
+                  indicator:
+                    arc_color: 0x444444
+                    arc_width: ${arc_stroke_px}
+                  knob:
+                    bg_opa: transp
+                    border_opa: transp
+
+              # Arc 3 — current temperature dot marker (display-only).
+              # `adjustable: true` keeps the knob styled by LVGL.
+              # LV_OBJ_FLAG_CLICKABLE is cleared on boot so it can't capture touch.
+              - arc:
+                  id: arc_current
+                  adjustable: true
+                  min_value: 0
+                  max_value: 100
+                  value: 20
+                  width: 100%
+                  height: 100%
+                  start_angle: ${arc_start_deg}
+                  end_angle: ${arc_end_deg}
+                  arc_width: 0
+                  indicator:
+                    arc_width: ${arc_stroke_px}
+                    arc_opa: 0%
+                  knob:
+                    bg_color: 0x444444
+                    border_width: 0
+                    border_opa: transp
+                    pad_all: -8
+
+              # Action status label — "Cooling" / "Heating" / "Fan" / "Idle".
+              # clickable: false so touches pass through to arc_setpoint.
+              - label:
+                  id: action_label
+                  align: CENTER
+                  y: -80
+                  text: "Idle"
+                  text_color: 0x555555
+                  text_font: roboto_action
+                  clickable: false
+
+              # Setpoint label — large central number with a smaller "°C".
+              # Fixed-width container so the row never reflows when the number
+              # widens (e.g. "9.5" → "24.0"). clickable: false passes touches
+              # through to arc_setpoint.
+              - obj:
+                  align: CENTER
+                  width: 360
+                  height: 140
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  layout:
+                    type: FLEX
+                    flex_flow: ROW
+                    flex_align_main: CENTER
+                    flex_align_cross: END
+                  widgets:
+                    - label:
+                        id: temp_label
+                        text: "--"
+                        text_color: 0xF5F5F5
+                        text_font: roboto_setpoint
+                    - label:
+                        text: "°C"
+                        text_color: 0x777777
+                        text_font: roboto_unit
+                        pad_bottom: 20
+
+              # Current room temperature — small label below the setpoint.
+              - label:
+                  id: current_label
+                  align: CENTER
+                  y: 90
+                  text: "--"
+                  text_color: 0x777777
+                  text_font: roboto_current
+                  clickable: false
+
+              # Arc 4 — draggable setpoint knob (drawn last = topmost = absorbs touch).
+              # Transparent arc + invisible indicator; only the styled knob renders.
+              # Knob border starts grey (off); apply_mode_style colours it on power-on.
+              - arc:
+                  id: arc_setpoint
+                  adjustable: true
+                  min_value: 0
+                  max_value: 100
+                  value: 30
+                  width: 100%
+                  height: 100%
+                  start_angle: ${arc_start_deg}
+                  end_angle: ${arc_end_deg}
+                  arc_width: 0
+                  indicator:
+                    arc_width: ${arc_stroke_px}
+                    arc_opa: 0%
+                  knob:
+                    bg_color: 0xFFFFFF
+                    border_color: 0x444444
+                    border_width: 6
+                    pad_all: -2
+                  on_value:
+                    then:
+                      # Drag handler: update globals + redraw the dependent arcs
+                      # instantly (no animation — feels laggy during a drag).
+                      # arc_setpoint itself is already at the correct value
+                      # because LVGL set it before firing this event.
+                      - lambda: |-
+                          int arc_val = (int)x;
+                          id(g_setpoint_arc) = arc_val;
+                          float raw = arc_val / 100.0f
+                                      * (id(g_temp_max) - id(g_temp_min))
+                                      + id(g_temp_min);
+                          id(g_setpoint) = roundf(raw * 2.0f) / 2.0f;
+                          ESP_LOGI("ui", "arc drag → arc=%d setpoint=%.1f",
+                                   arc_val, id(g_setpoint));
+                      - script.execute: update_arc_track
+                      - script.execute: update_diff_arc
+                      - script.execute: render_setpoint_label
+                  on_release:
+                    then:
+                      - script.execute: debounce_setpoint
+
+        # ── +/− button row ─────────────────────────────────────────────────────
+        # Flex container handles horizontal spacing — no manual x coordinates.
+        # Button glyphs are MDI placeholders; will be swapped for images later.
+        - obj:
+            align: TOP_MID
+            y: ${btn_row_y}
+            width: ${screen_w}
+            height: ${btn_size}
+            bg_opa: transp
+            border_width: 0
+            pad_left: ${btn_row_pad_h}
+            pad_right: ${btn_row_pad_h}
+            pad_top: 0
+            pad_bottom: 0
+            scrollable: false
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+              flex_align_cross: CENTER
+            widgets:
+              - button:
+                  id: btn_temp_minus
+                  width: ${btn_size}
+                  height: ${btn_size}
+                  radius: ${btn_radius}
+                  bg_opa: transp
+                  border_color: 0x2E2E2E
+                  border_width: 2
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lambda: 'ESP_LOGI("ui", "btn_temp_minus click");'
+                      - script.execute:
+                          id: step_setpoint
+                          delta: -0.5
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0374"
+                        text_font: mdi_btn
+                        text_color: 0x777777
+
+              - button:
+                  id: btn_temp_plus
+                  width: ${btn_size}
+                  height: ${btn_size}
+                  radius: ${btn_radius}
+                  bg_opa: transp
+                  border_color: 0x2E2E2E
+                  border_width: 2
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - lambda: 'ESP_LOGI("ui", "btn_temp_plus click");'
+                      - script.execute:
+                          id: step_setpoint
+                          delta: 0.5
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0417"
+                        text_font: mdi_btn
+                        text_color: 0x777777
+
+        # ── Touch debug overlay (top-most z-order) ─────────────────────────────
+        # touch_dot follows the touch position; coord_label / tap_count_label
+        # show raw GT911 coords + a tap counter so we can verify that
+        #   (a) on_touch fires at all,
+        #   (b) the coordinates land where the finger actually is,
+        #   (c) which widget the tap lands on (visible vs. expected position).
+        # All are clickable: false so they never absorb touch.
+        # The main config's touchscreen on_touch / on_release update these.
+        - obj:
+            id: touch_dot
+            x: 0
+            y: 0
+            width: 30
+            height: 30
+            radius: 15
+            bg_color: 0xFF00FF
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            hidden: true
+
         - label:
-            align: CENTER
-            y: -20
-            text: "AC Wall Controller"
-            text_color: 0xFFFFFF
-        - label:
-            align: CENTER
-            y: 20
-            text: "UI placeholder"
+            id: coord_label
+            align: BOTTOM_LEFT
+            x: 10
+            y: -10
+            text: "x=0 y=0"
             text_color: 0x888888
+            text_font: roboto_debug
+            clickable: false
+
+        - label:
+            id: tap_count_label
+            align: BOTTOM_RIGHT
+            x: -10
+            y: -10
+            text: "Taps: 0"
+            text_color: 0x888888
+            text_font: roboto_debug
+            clickable: false
