@@ -4,10 +4,7 @@
 #
 # Hardware references:
 #   Schematic: https://files.waveshare.com/wiki/ESP32-P4-WIFI6-Touch-LCD-7B/ESP32-P4-WIFI6-Touch-LCD-7B.pdf
-#   Verified config: https://github.com/agillis/esphome-modular-lvgl-buttons
-#     /blob/main/hardware/waveshare-esp32-p4-wifi6-touch-lcd-7b.yaml
-#
-# Flash via the USB-C UART port (NOT the USB-C OTG port).
+#   Verified config: https://github.com/agillis/esphome-modular-lvgl-buttons/blob/main/hardware/waveshare-esp32-p4-wifi6-touch-lcd-7b.yaml
 
 esphome:
   name: "waveshare-p4-lcd7"
@@ -73,9 +70,17 @@ update:
     update_interval: 6h
 
 # ── Network ───────────────────────────────────────────────────────────────────
+# Tuned for single-AP networks on the hosted-C6 WiFi stack:
+#   - power_save_mode NONE: prevents beacon-timeout drops under LVGL load.
+#   - fast_connect: skip the full scan, go straight to last-known BSSID.
+#   - enable_btm/rrm false: turn off 802.11k/v roaming (no peers to roam to).
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  power_save_mode: NONE
+  fast_connect: true
+  enable_btm: false
+  enable_rrm: false
   ap:
     ssid: "P4-LCD7 Fallback"
     password: "esphomep4"
