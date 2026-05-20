@@ -61,19 +61,26 @@ script:
           }
 
 # ── Images ────────────────────────────────────────────────────────────────────
+# DEV: resized to 1/10 (60x102) for fast compile/upload while iterating.
+# Displayed at native size (tiny dots in centre of screen) — the crossfade
+# still demonstrates correctly. Remove `resize` for final firmware.
 image:
   - file: assets/heat.png
     id: heat_bg
     type: RGB565
+    resize: "60x102"
   - file: assets/cool.png
     id: cool_bg
     type: RGB565
+    resize: "60x102"
   - file: assets/fan.png
     id: fan_bg
     type: RGB565
+    resize: "60x102"
   - file: assets/idle.png
     id: idle_bg
     type: RGB565
+    resize: "60x102"
 
 # ── LVGL ──────────────────────────────────────────────────────────────────────
 # rotation: 270 - portrait orientation (600 wide × 1024 tall).
