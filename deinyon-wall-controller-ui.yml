@@ -31,12 +31,48 @@ script:
 
   - id: on_hvac_action_changed
     then:
-      - lambda: 'return;'
+      # Cross-fade the four stacked background images. Driven by the climate's
+      # `action` enum (the same signal HA reports as `hvac_action`), so transient
+      # substates like heat_valve_hold / valve_settling / comp_cooldown stay on
+      # `idle` — the heat backdrop only shows when actually heating.
+      #
+      # Dedupe: climate.on_state fires on every publish (including current-temp
+      # updates), so we early-out unless the action enum actually changed.
+      # This also avoids retriggering lv_obj_fade_in/out mid-animation — those
+      # helpers hard-set the start value to TRANSP/COVER, so re-firing during a
+      # crossfade would snap the widget to black before fading back in.
+      - lambda: |-
+          static climate::ClimateAction last_action = climate::CLIMATE_ACTION_OFF;
+          auto action = id(${ac_climate_id}).action;
+          if (action == last_action) return;
+          last_action = action;
+
+          lv_obj_t *target;
+          switch (action) {
+            case climate::CLIMATE_ACTION_HEATING: target = id(bg_heat); break;
+            case climate::CLIMATE_ACTION_COOLING: target = id(bg_cool); break;
+            case climate::CLIMATE_ACTION_FAN:     target = id(bg_fan);  break;
+            default:                              target = id(bg_idle); break;
+          }
+          lv_obj_t *bgs[] = { id(bg_idle), id(bg_heat), id(bg_cool), id(bg_fan) };
+          for (auto *bg : bgs) {
+            if (bg == target) lv_obj_fade_in(bg, 500, 0);
+            else              lv_obj_fade_out(bg, 500, 0);
+          }
 
 # ── Images ────────────────────────────────────────────────────────────────────
 image:
   - file: assets/heat.png
     id: heat_bg
+    type: RGB565
+  - file: assets/cool.png
+    id: cool_bg
+    type: RGB565
+  - file: assets/fan.png
+    id: fan_bg
+    type: RGB565
+  - file: assets/idle.png
+    id: idle_bg
     type: RGB565
 
 # ── LVGL ──────────────────────────────────────────────────────────────────────
@@ -55,9 +91,31 @@ lvgl:
     - id: main_page
       bg_color: 0x000000
       bg_opa: cover
-      bg_image_src: heat_bg
-      bg_image_opa: cover
       widgets:
+        # Background layer: four stacked full-screen images, cross-faded by
+        # on_hvac_action_changed. Idle starts visible; the rest are transparent
+        # so the first state change fades them in.
+        - image:
+            id: bg_idle
+            src: idle_bg
+            align: CENTER
+            opa: COVER
+        - image:
+            id: bg_heat
+            src: heat_bg
+            align: CENTER
+            opa: TRANSP
+        - image:
+            id: bg_cool
+            src: cool_bg
+            align: CENTER
+            opa: TRANSP
+        - image:
+            id: bg_fan
+            src: fan_bg
+            align: CENTER
+            opa: TRANSP
+        # Foreground widgets — declared after the images so they sit on top.
         - label:
             align: CENTER
             y: -20
