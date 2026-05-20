@@ -1,0 +1,211 @@
+# AC Wall Controller — host/desktop UI development config
+#
+# Compiles and runs as a native desktop process (SDL window).
+# Use this to iterate on the LVGL UI without flashing hardware.
+#
+# Prerequisites:
+#   brew install sdl2           # macOS
+#   sudo apt install libsdl2-dev  # Debian/Ubuntu
+#
+# Run: esphome run deinyon-wall-controller-ui-host.yaml
+
+substitutions:
+  # Must stay in sync with deinyon-wall-controller.yaml
+  ac_climate_id: ac_climate
+  ac_min_temp: "16.0"
+  ac_max_temp: "30.0"
+  sensor_main:    "0"
+  sensor_desk:    "1"
+  sensor_bedroom: "2"
+  sensor_average: "3"
+
+esphome:
+  name: wall-controller-ui-host
+  friendly_name: "AC Wall Controller (Host)"
+  min_version: 2026.4.0
+
+host:
+
+logger:
+  level: DEBUG
+  logs:
+    lvgl: INFO
+
+# ── Display ───────────────────────────────────────────────────────────────────
+# Native 1024×600 matches the hardware panel dimensions.
+# LVGL rotation: 270 (set in the UI package) renders portrait content within.
+display:
+  - platform: sdl
+    id: my_display
+    dimensions:
+      width: 1024
+      height: 600
+
+touchscreen:
+  - platform: sdl
+    id: my_touch
+    display: my_display
+
+# ── Stub backlight ────────────────────────────────────────────────────────────
+# Mirrors the real LEDC output so screen_wake and future brightness controls compile.
+output:
+  - platform: template
+    id: backlight_pwm
+    type: float
+    write_action:
+      - logger.log:
+          format: "Backlight: %.2f"
+          args: ['state']
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: "Display Backlight"
+    output: backlight_pwm
+    restore_mode: ALWAYS_ON
+    default_transition_length: 250ms
+
+# ── Global state ──────────────────────────────────────────────────────────────
+globals:
+  - id: active_sensor_idx
+    type: int
+    restore_value: false
+    initial_value: ${sensor_main}
+
+# ── Stub sensors ──────────────────────────────────────────────────────────────
+sensor:
+  - platform: template
+    id: main_temp
+    name: "Main Temperature"
+    lambda: return 22.5;
+    update_interval: 10s
+
+  - platform: template
+    id: desk_temp
+    name: "Desk Temperature"
+    lambda: return 23.1;
+    update_interval: 10s
+
+  - platform: template
+    id: bedroom_temp
+    name: "Bedroom Temperature"
+    lambda: return 21.8;
+    update_interval: 10s
+
+  - platform: template
+    id: outdoor_temp
+    name: "Outdoor Temperature"
+    lambda: return 18.0;
+    update_interval: 10s
+
+  # Mirrors the logic in deinyon-wall-controller.yaml — updates driven by select.
+  - platform: template
+    id: active_temp
+    name: "Active Temperature"
+    lambda: |-
+      switch (id(active_sensor_idx)) {
+        case ${sensor_main}:    return id(main_temp).state;
+        case ${sensor_desk}:    return id(desk_temp).state;
+        case ${sensor_bedroom}: return id(bedroom_temp).state;
+        default: {
+          float sum = 0; int count = 0;
+          auto add = [&](float v) { if (!std::isnan(v)) { sum += v; count++; } };
+          add(id(main_temp).state);
+          add(id(desk_temp).state);
+          add(id(bedroom_temp).state);
+          if (count == 0) return NAN;
+          return sum / count;
+        }
+      }
+    update_interval: never
+
+text_sensor:
+  - platform: template
+    id: outdoor_condition
+    name: "Outdoor Condition"
+    lambda: return {"sunny"};
+    update_interval: 30s
+
+  # Mirrors the actron_b812 text sensors the UI will eventually reference.
+  - platform: template
+    id: ac_state
+    name: "Aircon State"
+    lambda: return {"idle"};
+    update_interval: 30s
+
+  - platform: template
+    id: ac_thermostat_direction
+    name: "Aircon Thermostat Direction"
+    lambda: return {"idle"};
+    update_interval: 30s
+    on_value:
+      then:
+        - script.execute: on_thermostat_direction_changed
+
+# ── Stub select ───────────────────────────────────────────────────────────────
+select:
+  - platform: template
+    name: "Thermostat Sensor"
+    id: thermostat_sensor_select
+    optimistic: true
+    options:
+      - "Main"
+      - "Desk"
+      - "Bedroom"
+      - "Average"
+    initial_option: "Main"
+    set_action:
+      - globals.set:
+          id: active_sensor_idx
+          value: !lambda |-
+            if (x == "Main")    return ${sensor_main};
+            if (x == "Desk")    return ${sensor_desk};
+            if (x == "Bedroom") return ${sensor_bedroom};
+            return ${sensor_average};
+      - component.update: active_temp
+      - script.execute: on_active_sensor_changed
+
+# ── Stub climate ──────────────────────────────────────────────────────────────
+# Replaces actron_b812 (hardware-only). The thermostat platform exposes the
+# same climate entity ID so the UI can reference it once implemented.
+switch:
+  - platform: template
+    id: _climate_dummy
+    optimistic: true
+
+climate:
+  - platform: thermostat
+    id: ${ac_climate_id}
+    name: "Aircon"
+    sensor: active_temp
+    min_idle_time: 1s
+    min_heating_off_time: 1s
+    min_heating_run_time: 1s
+    min_cooling_off_time: 1s
+    min_cooling_run_time: 1s
+    set_point_minimum_differential: 0.5
+    heat_action:
+      - switch.turn_on: _climate_dummy
+    cool_action:
+      - switch.turn_on: _climate_dummy
+    idle_action:
+      - switch.turn_off: _climate_dummy
+
+# Stub binary sensors that actron_b812 normally provides.
+binary_sensor:
+  - platform: template
+    id: ac_compressor_running
+    name: "Aircon Compressor Running"
+    lambda: return false;
+
+  - platform: template
+    id: ac_call_active
+    name: "Aircon Call Active"
+    lambda: return false;
+    on_state:
+      then:
+        - script.execute: on_hvac_action_changed
+
+# ── UI package ────────────────────────────────────────────────────────────────
+packages:
+  ui: !include deinyon-wall-controller-ui.yml
