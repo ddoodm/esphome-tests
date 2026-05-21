@@ -255,6 +255,11 @@ script:
           if (new_mode == 1)      id(g_cool_dir) = 1;
           else if (new_mode != 3) id(g_cool_dir) = 0;
 
+          // Snap arc_setpoint knob to the new position so it matches the
+          // incoming setpoint. Without this the knob stays at whatever value
+          // the user last dragged it to while the fill arcs update around it.
+          lv_arc_set_value(id(arc_setpoint), id(g_setpoint_arc));
+
           ESP_LOGI("ui", "sync: mode=%d sp=%.1f cur=%.1f arc_sp=%d arc_cur=%d",
                    new_mode, id(g_setpoint), id(g_current_temp),
                    id(g_setpoint_arc), id(g_current_arc));
@@ -550,6 +555,14 @@ image:
   - file: assets/glow-btm-fan.png
     id: fan_bg
     type: RGB
+  - file: assets/circle_icon_plus.png
+    id: circle_icon_plus
+    type: RGB
+    transparency: alpha_channel
+  - file: assets/circle_icon_minus.png
+    id: circle_icon_minus
+    type: RGB
+    transparency: alpha_channel
 
 # ── LVGL ──────────────────────────────────────────────────────────────────────
 # rotation: 270 — portrait orientation (600 wide × 1024 tall).
@@ -826,11 +839,22 @@ lvgl:
                   id: btn_temp_minus
                   width: ${btn_size}
                   height: ${btn_size}
-                  radius: ${btn_radius}
+                  radius: 0
                   bg_opa: transp
-                  border_color: 0x2E2E2E
-                  border_width: 2
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
                   pad_all: 0
+                  on_press:
+                    - lvgl.widget.update:
+                        id: btn_minus_img
+                        image_recolor: 0xFFFFFF
+                        image_recolor_opa: cover
+                  on_release:
+                    - lvgl.widget.update:
+                        id: btn_minus_img
+                        image_recolor: 0x666666
+                        image_recolor_opa: cover
                   on_click:
                     then:
                       - lambda: 'ESP_LOGI("ui", "btn_temp_minus click");'
@@ -838,21 +862,33 @@ lvgl:
                           id: step_setpoint
                           delta: -0.5
                   widgets:
-                    - label:
+                    - image:
+                        id: btn_minus_img
+                        src: circle_icon_minus
                         align: CENTER
-                        text: "\U000F0374"
-                        text_font: mdi_btn
-                        text_color: 0x777777
+                        recolor: 0x666666
+                        recolor_opa: cover
 
               - button:
                   id: btn_temp_plus
                   width: ${btn_size}
                   height: ${btn_size}
-                  radius: ${btn_radius}
+                  radius: 0
                   bg_opa: transp
-                  border_color: 0x2E2E2E
-                  border_width: 2
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
                   pad_all: 0
+                  on_press:
+                    - lvgl.widget.update:
+                        id: btn_plus_img
+                        image_recolor: 0xFFFFFF
+                        image_recolor_opa: cover
+                  on_release:
+                    - lvgl.widget.update:
+                        id: btn_plus_img
+                        image_recolor: 0x666666
+                        image_recolor_opa: cover
                   on_click:
                     then:
                       - lambda: 'ESP_LOGI("ui", "btn_temp_plus click");'
@@ -860,11 +896,12 @@ lvgl:
                           id: step_setpoint
                           delta: 0.5
                   widgets:
-                    - label:
+                    - image:
+                        id: btn_plus_img
+                        src: circle_icon_plus
                         align: CENTER
-                        text: "\U000F0417"
-                        text_font: mdi_btn
-                        text_color: 0x777777
+                        recolor: 0x666666
+                        recolor_opa: cover
 
         # ── Touch debug overlay (top-most z-order) ─────────────────────────────
         # touch_dot follows the touch position; coord_label / tap_count_label
