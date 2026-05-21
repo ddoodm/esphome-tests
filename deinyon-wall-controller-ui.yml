@@ -84,6 +84,11 @@ globals:
     type: int
     initial_value: '1'
 
+  # Fan speed: 0=auto 1=low 2=medium 3=high. Mirrors climate.fan_mode.
+  - id: g_fan_speed
+    type: int
+    initial_value: '0'
+
   # Current accent hex (matches g_mode); cached so lambdas don't repeat the switch.
   - id: g_accent_hex
     type: uint32_t
@@ -119,6 +124,10 @@ font:
       - "\U000F0717"   # mdi:snowflake  (cool)
       - "\U000F0238"   # mdi:fire       (heat)
       - "\U000F1A79"   # mdi:sun-snowflake-variant  (auto)
+      - "\U000F1472"   # mdi:fan-speed-1
+      - "\U000F1473"   # mdi:fan-speed-2
+      - "\U000F1474"   # mdi:fan-speed-3
+      - "\U000F171D"   # mdi:fan-auto
 # ── Boot init ─────────────────────────────────────────────────────────────────
 # Clears the touch flag on arc_current (display-only dot) and applies initial
 # styling so the arc renders with mode colours from the first frame.
@@ -250,6 +259,16 @@ script:
           if (new_mode == 1)      id(g_cool_dir) = 1;
           else if (new_mode != 3) id(g_cool_dir) = 0;
 
+          // Fan speed
+          if (c.fan_mode.has_value()) {
+            switch (c.fan_mode.value()) {
+              case climate::CLIMATE_FAN_LOW:    id(g_fan_speed) = 1; break;
+              case climate::CLIMATE_FAN_MEDIUM: id(g_fan_speed) = 2; break;
+              case climate::CLIMATE_FAN_HIGH:   id(g_fan_speed) = 3; break;
+              default:                          id(g_fan_speed) = 0; break;
+            }
+          }
+
           // Snap arc_setpoint knob to the new position so it matches the
           // incoming setpoint. Without this the knob stays at whatever value
           // the user last dragged it to while the fill arcs update around it.
@@ -258,11 +277,12 @@ script:
           ESP_LOGI("ui", "sync: mode=%d sp=%.1f cur=%.1f arc_sp=%d arc_cur=%d",
                    new_mode, id(g_setpoint), id(g_current_temp),
                    id(g_setpoint_arc), id(g_current_arc));
-      # apply_mode_style chains into update_arc_track + update_diff_arc.
+      # apply_mode_style chains into update_arc_track + update_diff_arc + update_mode_buttons.
       - script.execute: apply_mode_style
       - script.execute: update_arc_current
       - script.execute: render_setpoint_label
       - script.execute: render_current_label
+      - script.execute: update_fan_buttons
 
   # ── Label renderers ────────────────────────────────────────────────────────
   - id: render_setpoint_label
@@ -403,6 +423,7 @@ script:
       - script.execute: update_arc_track
       - script.execute: update_diff_arc
       - script.execute: update_mode_buttons
+      - script.execute: update_fan_buttons
 
   # ── Animated setpoint transition ───────────────────────────────────────────
   # Animates the visible arcs from their current state to the targets derived
@@ -582,6 +603,48 @@ script:
           };
           for (auto &it : items) {
             bool sel = (id(g_mode) == it.mv);
+            lv_obj_set_style_bg_color(it.btn, sel ? accent : inactive, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(it.lbl, sel ? icon_on : icon_off, LV_STATE_DEFAULT);
+          }
+
+  # ── Fan speed selector ────────────────────────────────────────────────────
+  # Sends a climate.control fan_mode call and refreshes the button highlights.
+  - id: set_fan_speed
+    parameters:
+      speed_val: int
+    then:
+      - lambda: |-
+          id(g_fan_speed) = speed_val;
+          climate::ClimateFanMode fm;
+          switch (speed_val) {
+            case 1: fm = climate::CLIMATE_FAN_LOW;    break;
+            case 2: fm = climate::CLIMATE_FAN_MEDIUM; break;
+            case 3: fm = climate::CLIMATE_FAN_HIGH;   break;
+            default: fm = climate::CLIMATE_FAN_AUTO;  break;
+          }
+          auto call = id(${ac_climate_id}).make_call();
+          call.set_fan_mode(fm);
+          call.perform();
+      - script.execute: update_fan_buttons
+
+  # Repaints fan speed buttons — selected gets the accent colour, others blend
+  # into the pill background. Uses the same g_accent_hex as the mode buttons so
+  # the highlight always matches the active mode colour.
+  - id: update_fan_buttons
+    then:
+      - lambda: |-
+          lv_color_t accent   = lv_color_hex(0x404040);
+          lv_color_t inactive = lv_color_hex(0x1C1C1C);
+          lv_color_t icon_on  = lv_color_hex(0xFFFFFF);
+          lv_color_t icon_off = lv_color_hex(0x555555);
+          struct { lv_obj_t *btn; lv_obj_t *lbl; int sv; } items[] = {
+            { id(btn_fan_speed_1),    id(lbl_fan_speed_1),    1 },
+            { id(btn_fan_speed_2),    id(lbl_fan_speed_2),    2 },
+            { id(btn_fan_speed_3),    id(lbl_fan_speed_3),    3 },
+            { id(btn_fan_speed_auto), id(lbl_fan_speed_auto), 0 },
+          };
+          for (auto &it : items) {
+            bool sel = (id(g_fan_speed) == it.sv);
             lv_obj_set_style_bg_color(it.btn, sel ? accent : inactive, LV_STATE_DEFAULT);
             lv_obj_set_style_text_color(it.lbl, sel ? icon_on : icon_off, LV_STATE_DEFAULT);
           }
@@ -1069,6 +1132,124 @@ lvgl:
                     - label:
                         id: lbl_mode_auto
                         text: "\U000F1A79"
+                        text_font: mdi_mode
+                        text_color: 0x555555
+                        align: CENTER
+
+        # ── Fan speed selector row ─────────────────────────────────────────────
+        # Speed 1 / 2 / 3 / Auto — same pill style as the mode selector above.
+        - obj:
+            align: TOP_MID
+            y: 533
+            width: 540
+            height: 76
+            bg_color: 0x1C1C1C
+            bg_opa: cover
+            border_width: 0
+            radius: 16
+            pad_top: 6
+            pad_bottom: 6
+            pad_left: 6
+            pad_right: 6
+            scrollable: false
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_EVENLY
+              flex_align_cross: CENTER
+            widgets:
+              - button:
+                  id: btn_fan_speed_1
+                  width: 120
+                  height: 64
+                  radius: 12
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - script.execute:
+                          id: set_fan_speed
+                          speed_val: 1
+                  widgets:
+                    - label:
+                        id: lbl_fan_speed_1
+                        text: "\U000F1472"
+                        text_font: mdi_mode
+                        text_color: 0x555555
+                        align: CENTER
+
+              - button:
+                  id: btn_fan_speed_2
+                  width: 120
+                  height: 64
+                  radius: 12
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - script.execute:
+                          id: set_fan_speed
+                          speed_val: 2
+                  widgets:
+                    - label:
+                        id: lbl_fan_speed_2
+                        text: "\U000F1473"
+                        text_font: mdi_mode
+                        text_color: 0x555555
+                        align: CENTER
+
+              - button:
+                  id: btn_fan_speed_3
+                  width: 120
+                  height: 64
+                  radius: 12
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - script.execute:
+                          id: set_fan_speed
+                          speed_val: 3
+                  widgets:
+                    - label:
+                        id: lbl_fan_speed_3
+                        text: "\U000F1474"
+                        text_font: mdi_mode
+                        text_color: 0x555555
+                        align: CENTER
+
+              - button:
+                  id: btn_fan_speed_auto
+                  width: 120
+                  height: 64
+                  radius: 12
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - script.execute:
+                          id: set_fan_speed
+                          speed_val: 0
+                  widgets:
+                    - label:
+                        id: lbl_fan_speed_auto
+                        text: "\U000F171D"
                         text_font: mdi_mode
                         text_color: 0x555555
                         align: CENTER
