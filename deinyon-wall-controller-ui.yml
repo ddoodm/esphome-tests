@@ -92,14 +92,14 @@ globals:
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 font:
-  - file: "gfonts://Roboto"
-    id: roboto_setpoint
-    size: 96
+  - file: "gfonts://Tulpen+One"
+    id: tulpen_setpoint
+    size: 120
     # Includes '-' so the placeholder "--" doesn't hit a missing-glyph path.
     glyphs: "0123456789.-"
-  - file: "gfonts://Roboto"
-    id: roboto_unit
-    size: 36
+  - file: "gfonts://Tulpen+One"
+    id: tulpen_unit
+    size: 48
     glyphs: "°C"
   - file: "gfonts://Roboto"
     id: roboto_current
@@ -110,15 +110,6 @@ font:
     size: 28
     # Unique chars from {Cooling, Heating, Idle, Fan} — duplicates not allowed.
     glyphs: "ColingHeatIdF"
-  # MDI font for the placeholder +/− glyphs; will be replaced with images later.
-  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
-    id: mdi_btn
-    size: 48
-    bpp: 4
-    glyphs:
-      - "\U000F0374"  # mdi:minus
-      - "\U000F0417"  # mdi:plus
-
 # ── Boot init ─────────────────────────────────────────────────────────────────
 # Clears the touch flag on arc_current (display-only dot) and applies initial
 # styling so the arc renders with mode colours from the first frame.
@@ -651,11 +642,11 @@ lvgl:
                         id: temp_label
                         text: "--"
                         text_color: 0xF5F5F5
-                        text_font: roboto_setpoint
+                        text_font: tulpen_setpoint
                     - label:
                         text: "°C"
                         text_color: 0x777777
-                        text_font: roboto_unit
+                        text_font: tulpen_unit
                         pad_bottom: 20
 
               # Current room temperature — small label below the setpoint.

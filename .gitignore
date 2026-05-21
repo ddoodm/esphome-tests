@@ -9,3 +9,5 @@ tests/build/
 .DS_Store
 assets/glow-bg.af~lock~
 .*~lock~
+assets/circle_icon.af~lock~
+assets/glow-btm.af~lock~
