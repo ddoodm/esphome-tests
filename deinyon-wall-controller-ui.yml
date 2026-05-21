@@ -135,9 +135,7 @@ esphome:
       - lambda: |-
           lv_obj_clear_flag(id(arc_current), LV_OBJ_FLAG_CLICKABLE);
       # sync_climate_to_ui chains into apply_mode_style + label renderers,
-      # so a single call here primes everything. PPA is disabled at the
-      # sdkconfig level (see deinyon-wall-controller.yaml comments) so the
-      # style/widget repaints triggered downstream are safe.
+      # so a single call here primes everything.
       - script.execute: sync_climate_to_ui
 
 # ── Scripts ───────────────────────────────────────────────────────────────────
@@ -161,8 +159,8 @@ script:
 
   - id: on_hvac_action_changed
     then:
-      # Cross-fade the four stacked background images AND refresh the action
-      # label in one place — both are driven by the climate's `action` enum.
+      # Cross-fade the three bottom-anchored background images AND refresh the
+      # action label in one place — both driven by the climate's `action` enum.
       #
       # Dedupe: climate.on_state fires on every publish (including current-temp
       # updates), so we early-out unless the action enum actually changed. This
@@ -176,7 +174,7 @@ script:
           last_action = action;
           ESP_LOGI("ui", "on_hvac_action_changed: action=%d", (int)action);
 
-          lv_obj_t *target;
+          lv_obj_t *target = nullptr;  // nullptr = fade all out (idle)
           const char *label_text;
           uint32_t    label_color;
           switch (action) {
@@ -196,12 +194,11 @@ script:
               label_color = 0x00D9A3;
               break;
             default:
-              target = id(bg_idle);
               label_text  = "Idle";
               label_color = 0x555555;
               break;
           }
-          lv_obj_t *bgs[] = { id(bg_idle), id(bg_heat), id(bg_cool), id(bg_fan) };
+          lv_obj_t *bgs[] = { id(bg_heat), id(bg_cool), id(bg_fan) };
           for (auto *bg : bgs) {
             if (bg == target) lv_obj_fade_in(bg, 500, 0);
             else              lv_obj_fade_out(bg, 500, 0);
@@ -541,26 +538,18 @@ script:
                 target_temperature: !lambda 'return id(g_setpoint);'
 
 # ── Images ────────────────────────────────────────────────────────────────────
-# DEV: resized to 1/10 (60x102) for fast compile/upload while iterating.
-# Displayed at native size (tiny dots in centre of screen) — the crossfade
-# still demonstrates correctly. Remove `resize` for final firmware.
+# 600×400 glow images anchored to the bottom of the screen.
+# No idle image — idle state shows a plain black background.
 image:
-  - file: assets/heat.png
+  - file: assets/glow-btm-heat.png
     id: heat_bg
-    type: RGB # RGB565
-    # resize: "60x102"
-  - file: assets/cool.png
+    type: RGB
+  - file: assets/glow-btm-cool.png
     id: cool_bg
     type: RGB
-    # resize: "60x102"
-  - file: assets/fan.png
+  - file: assets/glow-btm-fan.png
     id: fan_bg
     type: RGB
-    # resize: "60x102"
-  - file: assets/idle.png
-    id: idle_bg
-    type: RGB
-    # resize: "60x102"
 
 # ── LVGL ──────────────────────────────────────────────────────────────────────
 # rotation: 270 — portrait orientation (600 wide × 1024 tall).
@@ -587,28 +576,22 @@ lvgl:
       bg_opa: cover
       widgets:
         # ── Background layer ───────────────────────────────────────────────────
-        # Four stacked full-screen images cross-faded by on_hvac_action_changed.
-        # Idle starts visible; the rest are transparent so the first state change
-        # fades them in.
-        - image:
-            id: bg_idle
-            src: idle_bg
-            align: CENTER
-            opa: COVER
+        # Three 600×400 glow images anchored to the bottom, cross-faded by
+        # on_hvac_action_changed. All start transparent; idle shows no image.
         - image:
             id: bg_heat
             src: heat_bg
-            align: CENTER
+            align: BOTTOM_MID
             opa: TRANSP
         - image:
             id: bg_cool
             src: cool_bg
-            align: CENTER
+            align: BOTTOM_MID
             opa: TRANSP
         - image:
             id: bg_fan
             src: fan_bg
-            align: CENTER
+            align: BOTTOM_MID
             opa: TRANSP
 
         # ── Arc widget container ───────────────────────────────────────────────
