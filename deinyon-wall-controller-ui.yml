@@ -848,13 +848,13 @@ lvgl:
                   on_press:
                     - lvgl.widget.update:
                         id: btn_minus_img
-                        image_recolor: 0xFFFFFF
-                        image_recolor_opa: cover
+                        recolor: 0xFFFFFF
+                        recolor_opa: cover
                   on_release:
                     - lvgl.widget.update:
                         id: btn_minus_img
-                        image_recolor: 0x666666
-                        image_recolor_opa: cover
+                        recolor: 0x666666
+                        recolor_opa: cover
                   on_click:
                     then:
                       - lambda: 'ESP_LOGI("ui", "btn_temp_minus click");'
@@ -882,13 +882,13 @@ lvgl:
                   on_press:
                     - lvgl.widget.update:
                         id: btn_plus_img
-                        image_recolor: 0xFFFFFF
-                        image_recolor_opa: cover
+                        recolor: 0xFFFFFF
+                        recolor_opa: cover
                   on_release:
                     - lvgl.widget.update:
                         id: btn_plus_img
-                        image_recolor: 0x666666
-                        image_recolor_opa: cover
+                        recolor: 0x666666
+                        recolor_opa: cover
                   on_click:
                     then:
                       - lambda: 'ESP_LOGI("ui", "btn_temp_plus click");'
