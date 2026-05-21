@@ -8,3 +8,4 @@ components/actron_b812/__pycache__/
 tests/build/
 .DS_Store
 assets/glow-bg.af~lock~
+.*~lock~
