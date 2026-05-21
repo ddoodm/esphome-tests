@@ -110,6 +110,15 @@ font:
     size: 28
     # Unique chars from {Cooling, Heating, Idle, Fan} — duplicates not allowed.
     glyphs: "ColingHeatIdF"
+  - file: 'https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_mode
+    size: 36
+    bpp: 4
+    glyphs:
+      - "\U000F0210"   # mdi:fan
+      - "\U000F0717"   # mdi:snowflake  (cool)
+      - "\U000F0238"   # mdi:fire       (heat)
+      - "\U000F1A79"   # mdi:sun-snowflake-variant  (auto)
 # ── Boot init ─────────────────────────────────────────────────────────────────
 # Clears the touch flag on arc_current (display-only dot) and applies initial
 # styling so the arc renders with mode colours from the first frame.
@@ -393,6 +402,7 @@ script:
           lv_anim_del(id(arc_diff),  (lv_anim_exec_xcb_t)lv_arc_set_bg_end_angle);
       - script.execute: update_arc_track
       - script.execute: update_diff_arc
+      - script.execute: update_mode_buttons
 
   # ── Animated setpoint transition ───────────────────────────────────────────
   # Animates the visible arcs from their current state to the targets derived
@@ -527,6 +537,54 @@ script:
             - climate.control:
                 id: ${ac_climate_id}
                 target_temperature: !lambda 'return id(g_setpoint);'
+
+  # ── Mode selector ─────────────────────────────────────────────────────────
+  # Translates the UI mode integer (1=cool 2=heat 3=auto 4=fan) to a
+  # climate.control call, updates g_mode/g_cool_dir, then chains into
+  # apply_mode_style which repaints the arc colours and button highlights.
+  - id: set_mode
+    parameters:
+      mode_val: int
+    then:
+      - lambda: |-
+          id(g_mode) = mode_val;
+          if (mode_val == 1)      id(g_cool_dir) = 1;
+          else if (mode_val != 3) id(g_cool_dir) = 0;
+          climate::ClimateMode cm;
+          switch (mode_val) {
+            case 1: cm = climate::CLIMATE_MODE_COOL;      break;
+            case 2: cm = climate::CLIMATE_MODE_HEAT;      break;
+            case 3: cm = climate::CLIMATE_MODE_HEAT_COOL; break;
+            case 4: cm = climate::CLIMATE_MODE_FAN_ONLY;  break;
+            default: cm = climate::CLIMATE_MODE_OFF;      break;
+          }
+          auto call = id(${ac_climate_id}).make_call();
+          call.set_mode(cm);
+          call.perform();
+      - script.execute: apply_mode_style
+
+  # Repaints each mode button — selected button gets the accent colour bg and a
+  # white icon; others use a dim background with a grey icon.
+  # Called at the end of apply_mode_style so every mode change (local or from HA)
+  # keeps the buttons in sync.
+  - id: update_mode_buttons
+    then:
+      - lambda: |-
+          lv_color_t accent   = lv_color_hex(id(g_accent_hex));
+          lv_color_t inactive = lv_color_hex(0x1C1C1C);
+          lv_color_t icon_on  = lv_color_hex(0xFFFFFF);
+          lv_color_t icon_off = lv_color_hex(0x555555);
+          struct { lv_obj_t *btn; lv_obj_t *lbl; int mv; } items[] = {
+            { id(btn_mode_fan),  id(lbl_mode_fan),  4 },
+            { id(btn_mode_cool), id(lbl_mode_cool), 1 },
+            { id(btn_mode_heat), id(lbl_mode_heat), 2 },
+            { id(btn_mode_auto), id(lbl_mode_auto), 3 },
+          };
+          for (auto &it : items) {
+            bool sel = (id(g_mode) == it.mv);
+            lv_obj_set_style_bg_color(it.btn, sel ? accent : inactive, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(it.lbl, sel ? icon_on : icon_off, LV_STATE_DEFAULT);
+          }
 
 # ── Images ────────────────────────────────────────────────────────────────────
 # 600×400 glow images anchored to the bottom of the screen.
@@ -894,3 +952,123 @@ lvgl:
                         align: CENTER
                         recolor: 0x666666
                         recolor_opa: cover
+
+        # ── Mode selector row ──────────────────────────────────────────────────
+        # Four icon-only buttons (Fan / Cool / Heat / Auto) in a pill container.
+        # update_mode_buttons highlights the active mode with the accent colour;
+        # set_mode sends the climate.control call and repaints arc + buttons.
+        - obj:
+            align: TOP_MID
+            y: 445
+            width: 540
+            height: 76
+            bg_color: 0x1C1C1C
+            bg_opa: cover
+            border_width: 0
+            radius: 16
+            pad_top: 6
+            pad_bottom: 6
+            pad_left: 6
+            pad_right: 6
+            scrollable: false
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_EVENLY
+              flex_align_cross: CENTER
+            widgets:
+              - button:
+                  id: btn_mode_fan
+                  width: 120
+                  height: 64
+                  radius: 12
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - script.execute:
+                          id: set_mode
+                          mode_val: 4
+                  widgets:
+                    - label:
+                        id: lbl_mode_fan
+                        text: "\U000F0210"
+                        text_font: mdi_mode
+                        text_color: 0x555555
+                        align: CENTER
+
+              - button:
+                  id: btn_mode_cool
+                  width: 120
+                  height: 64
+                  radius: 12
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - script.execute:
+                          id: set_mode
+                          mode_val: 1
+                  widgets:
+                    - label:
+                        id: lbl_mode_cool
+                        text: "\U000F0717"
+                        text_font: mdi_mode
+                        text_color: 0x555555
+                        align: CENTER
+
+              - button:
+                  id: btn_mode_heat
+                  width: 120
+                  height: 64
+                  radius: 12
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - script.execute:
+                          id: set_mode
+                          mode_val: 2
+                  widgets:
+                    - label:
+                        id: lbl_mode_heat
+                        text: "\U000F0238"
+                        text_font: mdi_mode
+                        text_color: 0x555555
+                        align: CENTER
+
+              - button:
+                  id: btn_mode_auto
+                  width: 120
+                  height: 64
+                  radius: 12
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - script.execute:
+                          id: set_mode
+                          mode_val: 3
+                  widgets:
+                    - label:
+                        id: lbl_mode_auto
+                        text: "\U000F1A79"
+                        text_font: mdi_mode
+                        text_color: 0x555555
+                        align: CENTER
