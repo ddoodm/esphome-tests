@@ -20,6 +20,13 @@ substitutions:
   screen_w: "600"
   screen_h: "1024"
 
+  # ── LVGL colour depth ──────────────────────────────────────────────────────
+  # Hardware build (mipi_dsi) uses the patched components in components/ to
+  # render at 24-bit, which requires LVGL to emit ARGB8888 (color_depth: 32).
+  # Host build (sdl display) uses stock upstream LVGL which only allows
+  # color_depth: 16 — override this substitution to "16" from the host YAML.
+  lvgl_color_depth: "32"
+
   # ── Arc geometry ────────────────────────────────────────────────────────────
   # Change `arc_span_deg` (and keep start/end in sync) to tune the arc width.
   # Defaults: 120° span centred on the top → opens downward like an arch (⌒).
@@ -28,14 +35,14 @@ substitutions:
   arc_start_deg:  "210"     # = arc_center_deg − arc_span_deg / 2
   arc_end_deg:    "330"     # = arc_center_deg + arc_span_deg / 2
   arc_size:       "500"     # bounding-box edge length (arc renders inside this square)
-  arc_y:          "30"      # top margin from the screen edge
+  arc_y:          "220"     # top margin from the screen edge (below label cluster)
   arc_stroke_px:  "28"      # ring stroke width
 
   # ── +/− button geometry ─────────────────────────────────────────────────────
   # Buttons sit in a flex row below the arc; flex handles horizontal spacing.
   btn_size:       "120"
   btn_radius:     "60"      # = btn_size / 2
-  btn_row_y:      "600"     # vertical offset of the button row
+  btn_row_y:      "300"     # vertical offset of the button row (inside arc blank area)
   btn_row_pad_h:  "60"      # left/right inset of the button row inside the screen
 
 # ── Globals ───────────────────────────────────────────────────────────────────
@@ -82,12 +89,6 @@ globals:
     type: uint32_t
     initial_value: '0x33AAFF'
 
-  # ── Debug: tap counter ─────────────────────────────────────────────────────
-  # Incremented from the touchscreen on_release trigger in the main config.
-  - id: tap_counter
-    type: int
-    initial_value: '0'
-    restore_value: false
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 font:
@@ -117,12 +118,6 @@ font:
     glyphs:
       - "\U000F0374"  # mdi:minus
       - "\U000F0417"  # mdi:plus
-  # Tiny full-ASCII font for the debug overlay (coordinates, tap counter).
-  # Roboto / Montserrat from gfonts would also work but the built-in saves space.
-  - file: "gfonts://Roboto"
-    id: roboto_debug
-    size: 16
-    glyphs: " =0123456789xyTaps:"
 
 # ── Boot init ─────────────────────────────────────────────────────────────────
 # Clears the touch flag on arc_current (display-only dot) and applies initial
@@ -568,7 +563,7 @@ image:
 # rotation: 270 — portrait orientation (600 wide × 1024 tall).
 # byte_order: little_endian is required for the P4 7B MIPI-DSI panel.
 lvgl:
-  color_depth: 32   # ARGB8888; mipi_dsi driver strips the alpha byte when blitting to the RGB888 DPI framebuffer
+  color_depth: ${lvgl_color_depth}   # 32 → ARGB8888 on hardware (mipi_dsi strips the alpha byte); 16 → RGB565 on the SDL host build
   displays:
     - my_display
   touchscreens:
@@ -606,6 +601,70 @@ lvgl:
             src: fan_bg
             align: BOTTOM_MID
             opa: TRANSP
+
+        # ── Label cluster (action / setpoint / current) ───────────────────────
+        # Flex-column at the very top of the screen. SPACE_BETWEEN distributes
+        # equal vertical gaps between all three text elements.
+        - obj:
+            align: TOP_MID
+            y: 30
+            width: 360
+            height: 170
+            bg_opa: transp
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout:
+              type: FLEX
+              flex_flow: COLUMN
+              flex_align_main: SPACE_BETWEEN
+              flex_align_cross: CENTER
+            widgets:
+              # Action status label — "Cooling" / "Heating" / "Fan" / "Idle".
+              - label:
+                  id: action_label
+                  text: "Idle"
+                  text_color: 0x555555
+                  text_font: roboto_action
+                  clickable: false
+
+              # Setpoint label — large central number with a smaller "°C".
+              # Fixed-width container so the row never reflows when the number
+              # widens (e.g. "9.5" → "24.0"). clickable: false passes touches
+              # through to arc_setpoint.
+              - obj:
+                  width: 360
+                  height: 120
+                  bg_opa: transp
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  layout:
+                    type: FLEX
+                    flex_flow: ROW
+                    flex_align_main: CENTER
+                    flex_align_cross: END
+                  widgets:
+                    - label:
+                        id: temp_label
+                        text: "--"
+                        text_color: 0xF5F5F5
+                        text_font: roboto_setpoint
+                    - label:
+                        text: "°C"
+                        text_color: 0x777777
+                        text_font: roboto_unit
+                        pad_bottom: 20
+
+              # Current room temperature — small label below the setpoint.
+              - label:
+                  id: current_label
+                  text: "--"
+                  text_color: 0x777777
+                  text_font: roboto_current
+                  clickable: false
 
         # ── Arc widget container ───────────────────────────────────────────────
         # Square container, centred horizontally at the top of the screen.
@@ -719,57 +778,6 @@ lvgl:
                     border_opa: transp
                     pad_all: -8
 
-              # Action status label — "Cooling" / "Heating" / "Fan" / "Idle".
-              # clickable: false so touches pass through to arc_setpoint.
-              - label:
-                  id: action_label
-                  align: CENTER
-                  y: -80
-                  text: "Idle"
-                  text_color: 0x555555
-                  text_font: roboto_action
-                  clickable: false
-
-              # Setpoint label — large central number with a smaller "°C".
-              # Fixed-width container so the row never reflows when the number
-              # widens (e.g. "9.5" → "24.0"). clickable: false passes touches
-              # through to arc_setpoint.
-              - obj:
-                  align: CENTER
-                  width: 360
-                  height: 140
-                  bg_opa: transp
-                  border_width: 0
-                  pad_all: 0
-                  scrollable: false
-                  clickable: false
-                  layout:
-                    type: FLEX
-                    flex_flow: ROW
-                    flex_align_main: CENTER
-                    flex_align_cross: END
-                  widgets:
-                    - label:
-                        id: temp_label
-                        text: "--"
-                        text_color: 0xF5F5F5
-                        text_font: roboto_setpoint
-                    - label:
-                        text: "°C"
-                        text_color: 0x777777
-                        text_font: roboto_unit
-                        pad_bottom: 20
-
-              # Current room temperature — small label below the setpoint.
-              - label:
-                  id: current_label
-                  align: CENTER
-                  y: 90
-                  text: "--"
-                  text_color: 0x777777
-                  text_font: roboto_current
-                  clickable: false
-
               # Arc 4 — draggable setpoint knob (drawn last = topmost = absorbs touch).
               # Transparent arc + invisible indicator; only the styled knob renders.
               # Knob border starts grey (off); apply_mode_style colours it on power-on.
@@ -805,8 +813,6 @@ lvgl:
                                       * (id(g_temp_max) - id(g_temp_min))
                                       + id(g_temp_min);
                           id(g_setpoint) = roundf(raw * 2.0f) / 2.0f;
-                          ESP_LOGI("ui", "arc drag → arc=%d setpoint=%.1f",
-                                   arc_val, id(g_setpoint));
                       - script.execute: update_arc_track
                       - script.execute: update_diff_arc
                       - script.execute: render_setpoint_label
@@ -815,19 +821,16 @@ lvgl:
                       - script.execute: debounce_setpoint
 
         # ── +/− button row ─────────────────────────────────────────────────────
-        # Flex container handles horizontal spacing — no manual x coordinates.
-        # Button glyphs are MDI placeholders; will be swapped for images later.
+        # Narrow centred container positions both buttons in the blank interior
+        # at the bottom of the arc arch. Width 320 → 80 px gap between buttons.
         - obj:
             align: TOP_MID
             y: ${btn_row_y}
-            width: ${screen_w}
+            width: 260
             height: ${btn_size}
             bg_opa: transp
             border_width: 0
-            pad_left: ${btn_row_pad_h}
-            pad_right: ${btn_row_pad_h}
-            pad_top: 0
-            pad_bottom: 0
+            pad_all: 0
             scrollable: false
             layout:
               type: FLEX
@@ -857,7 +860,6 @@ lvgl:
                         recolor_opa: cover
                   on_click:
                     then:
-                      - lambda: 'ESP_LOGI("ui", "btn_temp_minus click");'
                       - script.execute:
                           id: step_setpoint
                           delta: -0.5
@@ -891,7 +893,6 @@ lvgl:
                         recolor_opa: cover
                   on_click:
                     then:
-                      - lambda: 'ESP_LOGI("ui", "btn_temp_plus click");'
                       - script.execute:
                           id: step_setpoint
                           delta: 0.5
@@ -902,45 +903,3 @@ lvgl:
                         align: CENTER
                         recolor: 0x666666
                         recolor_opa: cover
-
-        # ── Touch debug overlay (top-most z-order) ─────────────────────────────
-        # touch_dot follows the touch position; coord_label / tap_count_label
-        # show raw GT911 coords + a tap counter so we can verify that
-        #   (a) on_touch fires at all,
-        #   (b) the coordinates land where the finger actually is,
-        #   (c) which widget the tap lands on (visible vs. expected position).
-        # All are clickable: false so they never absorb touch.
-        # The main config's touchscreen on_touch / on_release update these.
-        - obj:
-            id: touch_dot
-            x: 0
-            y: 0
-            width: 30
-            height: 30
-            radius: 15
-            bg_color: 0xFF00FF
-            bg_opa: COVER
-            border_width: 0
-            pad_all: 0
-            clickable: false
-            hidden: true
-
-        - label:
-            id: coord_label
-            align: BOTTOM_LEFT
-            x: 10
-            y: -10
-            text: "x=0 y=0"
-            text_color: 0x888888
-            text_font: roboto_debug
-            clickable: false
-
-        - label:
-            id: tap_count_label
-            align: BOTTOM_RIGHT
-            x: -10
-            y: -10
-            text: "Taps: 0"
-            text_color: 0x888888
-            text_font: roboto_debug
-            clickable: false

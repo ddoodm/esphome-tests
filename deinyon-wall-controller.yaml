@@ -434,45 +434,6 @@ touchscreen:
     # GT911Touchscreen::setup_internal_, which is exactly what we want.
     on_touch:
       - script.execute: screen_wake
-      # ── Debug tap locator (UI package owns the widgets) ──────────────────
-      # touch.x/touch.y are in panel-native LANDSCAPE coords (range
-      # ~[0, 1024] × ~[0, 600]). Rotate to LVGL portrait coords (600 × 1024)
-      # for widget placement — same formula LVGL uses internally for hit-test.
-      - lambda: |-
-          int lvgl_x = 599 - touch.y;
-          int lvgl_y = touch.x;
-          ESP_LOGI("touch",
-                   "press lvgl=(%d, %d) ts=(%d, %d) raw=(%d, %d) id=%d",
-                   lvgl_x, lvgl_y, touch.x, touch.y,
-                   touch.x_raw, touch.y_raw, touch.id);
-      - lvgl.widget.update:
-          id: touch_dot
-          hidden: false
-          x: !lambda 'return (599 - touch.y) - 15;'
-          y: !lambda 'return touch.x - 15;'
-      - lvgl.label.update:
-          id: coord_label
-          text: !lambda |-
-            char buf[48];
-            snprintf(buf, sizeof(buf), "lvgl=%d,%d ts=%d,%d",
-                     599 - touch.y, touch.x, touch.x, touch.y);
-            return std::string(buf);
-    on_release:
-      - lambda: |-
-          id(tap_counter) += 1;
-          ESP_LOGI("touch", "release (taps=%d)", id(tap_counter));
-      - lvgl.label.update:
-          id: tap_count_label
-          text: !lambda |-
-            char buf[32];
-            snprintf(buf, sizeof(buf), "Taps: %d", id(tap_counter));
-            return std::string(buf);
-      # Keep the dot visible briefly so quick taps remain visible,
-      # then hide it. Use a one-shot interval-equivalent via delay+update.
-      - delay: 250ms
-      - lvgl.widget.update:
-          id: touch_dot
-          hidden: true
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 packages:

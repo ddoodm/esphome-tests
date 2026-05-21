@@ -19,12 +19,28 @@ substitutions:
   sensor_bedroom: "2"
   sensor_average: "3"
 
+  # Host build uses stock upstream LVGL (no local component overrides) and the
+  # SDL display's fast-path only takes RGB565 source. Keep depth 16 here; the
+  # hardware build keeps 32 via the default in deinyon-wall-controller-ui.yml.
+  lvgl_color_depth: "16"
+
 esphome:
   name: wall-controller-ui-host
   friendly_name: "AC Wall Controller (Host)"
   min_version: 2026.4.0
 
 host:
+
+# Pull in the local component overrides so this host build uses the same
+# patched lvgl, display, and image schemas as the hardware build. mipi_dsi is
+# excluded — it's ESP32-P4-only and would fail to compile under the host
+# target. The SDL display platform doesn't benefit from depth=32 (its texture
+# format is RGB565), so lvgl_color_depth is "16" below.
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [display, image, lvgl]
 
 logger:
   level: DEBUG
