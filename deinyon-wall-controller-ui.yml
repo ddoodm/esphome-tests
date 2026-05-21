@@ -547,25 +547,26 @@ script:
 image:
   - file: assets/heat.png
     id: heat_bg
-    type: RGB565
-    resize: "60x102"
+    type: RGB # RGB565
+    # resize: "60x102"
   - file: assets/cool.png
     id: cool_bg
-    type: RGB565
-    resize: "60x102"
+    type: RGB
+    # resize: "60x102"
   - file: assets/fan.png
     id: fan_bg
-    type: RGB565
-    resize: "60x102"
+    type: RGB
+    # resize: "60x102"
   - file: assets/idle.png
     id: idle_bg
-    type: RGB565
-    resize: "60x102"
+    type: RGB
+    # resize: "60x102"
 
 # ── LVGL ──────────────────────────────────────────────────────────────────────
 # rotation: 270 — portrait orientation (600 wide × 1024 tall).
 # byte_order: little_endian is required for the P4 7B MIPI-DSI panel.
 lvgl:
+  color_depth: 32   # ARGB8888; mipi_dsi driver strips the alpha byte when blitting to the RGB888 DPI framebuffer
   displays:
     - my_display
   touchscreens:

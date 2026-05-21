@@ -29,6 +29,12 @@ substitutions:
   ha_weather:      weather.forecast_home
 
 external_components:
+  # Local overrides that add XRGB8888 / LV_COLOR_DEPTH=32 support to the
+  # display, lvgl, and mipi_dsi components. See components/ directory.
+  - source:
+      type: local
+      path: components
+    components: [display, image, lvgl, mipi_dsi]
   - source: github://ddoodm/esphome-actron-b812@main
     components: [actron_b812]
 
@@ -367,6 +373,9 @@ display:
     model: WAVESHARE-ESP32-P4-WIFI6-TOUCH-LCD-7B
     reset_pin:
       number: 33
+    # pixel_mode is dead code in the driver (only logged); omit it.
+    color_depth: 24   # DPI framebuffer = RGB888; LVGL renders XRGB8888 (32-bit) and the driver strips X
+    color_order: rgb  # Waveshare 7B panel is RGB order
     dimensions:
       width: 1024
       height: 600
