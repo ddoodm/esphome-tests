@@ -84,6 +84,13 @@ globals:
     type: int
     initial_value: '1'
 
+  # Last non-off mode — restored across reboots so the power button can
+  # return to the previous mode without knowing what it was before off.
+  - id: g_last_active_mode
+    type: int
+    restore_value: true
+    initial_value: '1'    # default: cool
+
   # Fan speed: 0=auto 1=low 2=medium 3=high. Mirrors climate.fan_mode.
   - id: g_fan_speed
     type: int
@@ -254,6 +261,7 @@ script:
             default:                              new_mode = 0; break;
           }
           id(g_mode) = new_mode;
+          if (new_mode != 0) id(g_last_active_mode) = new_mode;
           // Cool/heat/fan/off have deterministic direction. Auto (3) is owned
           // by on_thermostat_direction_changed.
           if (new_mode == 1)      id(g_cool_dir) = 1;
@@ -424,6 +432,7 @@ script:
       - script.execute: update_diff_arc
       - script.execute: update_mode_buttons
       - script.execute: update_fan_buttons
+      - script.execute: update_power_button
 
   # ── Animated setpoint transition ───────────────────────────────────────────
   # Animates the visible arcs from their current state to the targets derived
@@ -607,6 +616,50 @@ script:
             lv_obj_set_style_text_color(it.lbl, sel ? icon_on : icon_off, LV_STATE_DEFAULT);
           }
 
+  # ── Power toggle ──────────────────────────────────────────────────────────
+  # If off → restore g_last_active_mode. If on → save current mode, go off.
+  - id: toggle_power
+    then:
+      - lambda: |-
+          if (id(g_mode) == 0) {
+            int restore = id(g_last_active_mode);
+            if (restore == 0) restore = 1;   // safety: never restore to off
+            id(g_mode) = restore;
+            if (restore == 1)      id(g_cool_dir) = 1;
+            else if (restore != 3) id(g_cool_dir) = 0;
+            climate::ClimateMode cm;
+            switch (restore) {
+              case 1: cm = climate::CLIMATE_MODE_COOL;      break;
+              case 2: cm = climate::CLIMATE_MODE_HEAT;      break;
+              case 3: cm = climate::CLIMATE_MODE_HEAT_COOL; break;
+              case 4: cm = climate::CLIMATE_MODE_FAN_ONLY;  break;
+              default: cm = climate::CLIMATE_MODE_COOL;     break;
+            }
+            auto call = id(${ac_climate_id}).make_call();
+            call.set_mode(cm);
+            call.perform();
+          } else {
+            id(g_last_active_mode) = id(g_mode);
+            id(g_mode) = 0;
+            id(g_cool_dir) = 0;
+            auto call = id(${ac_climate_id}).make_call();
+            call.set_mode(climate::CLIMATE_MODE_OFF);
+            call.perform();
+          }
+      - script.execute: apply_mode_style
+
+  # Recolours the power button image to match power state + mode accent.
+  # White accent when on, dim grey when off.
+  - id: update_power_button
+    then:
+      - lambda: |-
+          bool powered = (id(g_mode) != 0);
+          lv_color_t col = powered
+            ? lv_color_hex(id(g_accent_hex))
+            : lv_color_hex(0x444444);
+          lv_obj_set_style_img_recolor(id(pwr_btn_img), col, LV_STATE_DEFAULT);
+          lv_obj_set_style_img_recolor_opa(id(pwr_btn_img), LV_OPA_COVER, LV_STATE_DEFAULT);
+
   # ── Fan speed selector ────────────────────────────────────────────────────
   # Sends a climate.control fan_mode call and refreshes the button highlights.
   - id: set_fan_speed
@@ -668,6 +721,10 @@ image:
     transparency: alpha_channel
   - file: assets/circle_icon_minus.png
     id: circle_icon_minus
+    type: RGB
+    transparency: alpha_channel
+  - file: assets/circle_icon_pwr.png
+    id: circle_icon_pwr
     type: RGB
     transparency: alpha_channel
 
@@ -1253,3 +1310,39 @@ lvgl:
                         text_font: mdi_mode
                         text_color: 0x555555
                         align: CENTER
+
+        # ── Power button ───────────────────────────────────────────────────────
+        # Toggles off ↔ last-active-mode. Coloured with the mode accent when on,
+        # grey when off — same visual language as the +/− buttons.
+        - button:
+            id: btn_power
+            align: BOTTOM_MID
+            y: -40
+            width: ${btn_size}
+            height: ${btn_size}
+            radius: 0
+            bg_opa: transp
+            border_width: 0
+            outline_width: 0
+            shadow_width: 0
+            pad_all: 0
+            on_press:
+              - lambda: |-
+                  lv_obj_set_style_img_recolor(id(pwr_btn_img),
+                                               lv_color_hex(0xFFFFFF),
+                                               LV_STATE_DEFAULT);
+                  lv_obj_set_style_img_recolor_opa(id(pwr_btn_img),
+                                                   LV_OPA_COVER,
+                                                   LV_STATE_DEFAULT);
+            on_release:
+              - script.execute: update_power_button
+            on_click:
+              then:
+                - script.execute: toggle_power
+            widgets:
+              - image:
+                  id: pwr_btn_img
+                  src: circle_icon_pwr
+                  align: CENTER
+                  recolor: 0x444444
+                  recolor_opa: cover
