@@ -147,7 +147,7 @@ time:
 # NOTE: GPIO6 carried over from the S3 wall controller — verify on the P4 wiring.
 remote_transmitter:
   id: ac_tx
-  pin: GPIO6
+  pin: GPIO3
   carrier_duty_percent: 100%
 
 # ── I²C ───────────────────────────────────────────────────────────────────────
@@ -166,7 +166,7 @@ sensor:
   - platform: sht4x
     i2c_id: bus_a
     address: 0x44
-    update_interval: 30s
+    update_interval: 10s
     temperature:
       id: main_temp
       name: "Main Temperature"
@@ -176,6 +176,7 @@ sensor:
           - script.execute:
               id: maybe_update_active_temp
               sensor_index: ${sensor_main}
+          - script.execute: update_sensor_list
     humidity:
       id: main_humidity
       name: "Main Humidity"
@@ -191,6 +192,7 @@ sensor:
         - script.execute:
             id: maybe_update_active_temp
             sensor_index: ${sensor_desk}
+        - script.execute: update_sensor_list
 
   - platform: homeassistant
     id: bedroom_temp
@@ -201,6 +203,7 @@ sensor:
         - script.execute:
             id: maybe_update_active_temp
             sensor_index: ${sensor_bedroom}
+        - script.execute: update_sensor_list
 
   # Outdoor temp from the weather entity's `temperature` attribute
   - platform: homeassistant
@@ -306,8 +309,8 @@ climate:
     hysteresis: 0.2
     auto_deadband: 1.0
     auto_deadband_timeout: 20min
-    compressor_cooldown: 3s # 4min
-    valve_settle_time: 3s # 40s
+    compressor_cooldown: 4min
+    valve_settle_time: 40s
     time_id: ha_time
     # Fire the UI's action-style refresh whenever climate state changes — this
     # tracks the `action` enum (HEATING/COOLING/FAN/IDLE/OFF) directly rather
