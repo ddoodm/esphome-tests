@@ -122,6 +122,12 @@ font:
     size: 28
     # Unique chars from {Cooling, Heating, Idle, Fan} — duplicates not allowed.
     glyphs: "ColingHeatIdF"
+  - file: "gfonts://Roboto"
+    id: roboto_sensor
+    size: 24
+    # Unique chars from sensor names (Main, Desk, Bedroom, Average) + temp display.
+    glyphs: "ABDMadegikmnorsv0123456789.-°C"
+
   - file: 'https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf'
     id: mdi_mode
     size: 36
@@ -148,6 +154,7 @@ esphome:
       # sync_climate_to_ui chains into apply_mode_style + label renderers,
       # so a single call here primes everything.
       - script.execute: sync_climate_to_ui
+      - script.execute: update_sensor_list
 
 # ── Scripts ───────────────────────────────────────────────────────────────────
 # Convention: any script that updates g_setpoint_arc or g_current_arc should
@@ -162,7 +169,7 @@ script:
 
   - id: on_active_sensor_changed
     then:
-      - lambda: 'return;'
+      - script.execute: update_sensor_list
 
   - id: on_thermostat_direction_changed
     then:
@@ -701,6 +708,46 @@ script:
             lv_obj_set_style_bg_color(it.btn, sel ? accent : inactive, LV_STATE_DEFAULT);
             lv_obj_set_style_text_color(it.lbl, sel ? icon_on : icon_off, LV_STATE_DEFAULT);
           }
+
+  # ── Sensor source list ────────────────────────────────────────────────────
+  # Repaints the four sensor-source rows: highlights the active row and
+  # refreshes the temperature values displayed on the right side of each row.
+  # Called from on_active_sensor_changed and from each sensor's on_value so
+  # the displayed temperatures stay current without requiring a selection change.
+  - id: update_sensor_list
+    then:
+      - lambda: |-
+          struct { lv_obj_t *btn; lv_obj_t *name; lv_obj_t *temp; int idx; } rows[] = {
+            { id(btn_sensor_main),    id(lbl_sensor_main_name),    id(lbl_sensor_main_temp),    0 },
+            { id(btn_sensor_desk),    id(lbl_sensor_desk_name),    id(lbl_sensor_desk_temp),    1 },
+            { id(btn_sensor_bedroom), id(lbl_sensor_bedroom_name), id(lbl_sensor_bedroom_temp), 2 },
+            { id(btn_sensor_average), id(lbl_sensor_average_name), id(lbl_sensor_average_temp), 3 },
+          };
+          for (auto &r : rows) {
+            bool sel = (id(active_sensor_idx) == r.idx);
+            lv_obj_set_style_bg_color(r.btn, lv_color_hex(sel ? 0x303030 : 0x1C1C1C), LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(r.name, lv_color_hex(sel ? 0xFFFFFF : 0x888888), LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(r.temp, lv_color_hex(sel ? 0x999999 : 0x444444), LV_STATE_DEFAULT);
+          }
+          auto set_temp = [](lv_obj_t *lbl, float v) {
+            if (std::isnan(v)) {
+              lv_label_set_text(lbl, "--");
+            } else {
+              char buf[12];
+              snprintf(buf, sizeof(buf), "%.1f\xC2\xB0""C", v);
+              lv_label_set_text(lbl, buf);
+            }
+          };
+          set_temp(id(lbl_sensor_main_temp),    id(main_temp).state);
+          set_temp(id(lbl_sensor_desk_temp),    id(desk_temp).state);
+          set_temp(id(lbl_sensor_bedroom_temp), id(bedroom_temp).state);
+          // Average: same logic as the active_temp template sensor
+          float sum = 0; int count = 0;
+          auto add = [&](float v) { if (!std::isnan(v)) { sum += v; count++; } };
+          add(id(main_temp).state);
+          add(id(desk_temp).state);
+          add(id(bedroom_temp).state);
+          set_temp(id(lbl_sensor_average_temp), count > 0 ? sum / count : NAN);
 
 # ── Images ────────────────────────────────────────────────────────────────────
 # 600×400 glow images anchored to the bottom of the screen.
@@ -1310,6 +1357,163 @@ lvgl:
                         text_font: mdi_mode
                         text_color: 0x555555
                         align: CENTER
+
+        # ── Sensor source selector ────────────────────────────────────────────
+        # Four rows showing each sensor source with its current temperature on
+        # the right. The active source is highlighted; tapping a row calls
+        # select.set which chains through set_action → on_active_sensor_changed
+        # → update_sensor_list to repaint highlights and refresh temperatures.
+        - obj:
+            align: TOP_MID
+            y: 621
+            width: 540
+            height: 220
+            bg_color: 0x1C1C1C
+            bg_opa: cover
+            border_width: 0
+            radius: 16
+            pad_top: 6
+            pad_bottom: 6
+            pad_left: 6
+            pad_right: 6
+            scrollable: false
+            layout:
+              type: FLEX
+              flex_flow: COLUMN
+              flex_align_main: CENTER
+              flex_align_cross: STRETCH
+            widgets:
+              - button:
+                  id: btn_sensor_main
+                  width: 100%
+                  height: 48
+                  radius: 10
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_left: 16
+                  pad_right: 16
+                  pad_top: 0
+                  pad_bottom: 0
+                  on_click:
+                    then:
+                      - select.set:
+                          id: thermostat_sensor_select
+                          option: "Main"
+                  widgets:
+                    - label:
+                        id: lbl_sensor_main_name
+                        text: "Main"
+                        text_font: roboto_sensor
+                        text_color: 0x888888
+                        align: LEFT_MID
+                    - label:
+                        id: lbl_sensor_main_temp
+                        text: "--"
+                        text_font: roboto_sensor
+                        text_color: 0x444444
+                        align: RIGHT_MID
+
+              - button:
+                  id: btn_sensor_desk
+                  width: 100%
+                  height: 48
+                  radius: 10
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_left: 16
+                  pad_right: 16
+                  pad_top: 0
+                  pad_bottom: 0
+                  on_click:
+                    then:
+                      - select.set:
+                          id: thermostat_sensor_select
+                          option: "Desk"
+                  widgets:
+                    - label:
+                        id: lbl_sensor_desk_name
+                        text: "Desk"
+                        text_font: roboto_sensor
+                        text_color: 0x888888
+                        align: LEFT_MID
+                    - label:
+                        id: lbl_sensor_desk_temp
+                        text: "--"
+                        text_font: roboto_sensor
+                        text_color: 0x444444
+                        align: RIGHT_MID
+
+              - button:
+                  id: btn_sensor_bedroom
+                  width: 100%
+                  height: 48
+                  radius: 10
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_left: 16
+                  pad_right: 16
+                  pad_top: 0
+                  pad_bottom: 0
+                  on_click:
+                    then:
+                      - select.set:
+                          id: thermostat_sensor_select
+                          option: "Bedroom"
+                  widgets:
+                    - label:
+                        id: lbl_sensor_bedroom_name
+                        text: "Bedroom"
+                        text_font: roboto_sensor
+                        text_color: 0x888888
+                        align: LEFT_MID
+                    - label:
+                        id: lbl_sensor_bedroom_temp
+                        text: "--"
+                        text_font: roboto_sensor
+                        text_color: 0x444444
+                        align: RIGHT_MID
+
+              - button:
+                  id: btn_sensor_average
+                  width: 100%
+                  height: 48
+                  radius: 10
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_left: 16
+                  pad_right: 16
+                  pad_top: 0
+                  pad_bottom: 0
+                  on_click:
+                    then:
+                      - select.set:
+                          id: thermostat_sensor_select
+                          option: "Average"
+                  widgets:
+                    - label:
+                        id: lbl_sensor_average_name
+                        text: "Average"
+                        text_font: roboto_sensor
+                        text_color: 0x888888
+                        align: LEFT_MID
+                    - label:
+                        id: lbl_sensor_average_temp
+                        text: "--"
+                        text_font: roboto_sensor
+                        text_color: 0x444444
+                        align: RIGHT_MID
 
         # ── Power button ───────────────────────────────────────────────────────
         # Toggles off ↔ last-active-mode. Coloured with the mode accent when on,
