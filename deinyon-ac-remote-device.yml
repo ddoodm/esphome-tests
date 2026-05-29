@@ -1,8 +1,8 @@
 substitutions:
-  ac_entity_id: climate.actron_test_aircon
+  ac_entity_id: climate.ac_wall_controller_aircon
   # Text sensor entity for the actron_b812 thermostat direction ("off"/"cool"/"heat").
   # Used in auto (heat_cool) mode to determine arc direction.
-  ac_thermostat_dir_entity_id: sensor.actron_test_aircon_thermostat_direction
+  ac_thermostat_dir_entity_id: sensor.ac_wall_controller_aircon_thermostat_direction
 
 esphome:
   name: deinyon-ac-remote
