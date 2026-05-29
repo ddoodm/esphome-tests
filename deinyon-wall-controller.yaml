@@ -35,7 +35,12 @@ external_components:
       type: local
       path: components
     components: [display, image, lvgl, mipi_dsi]
-  - source: github://ddoodm/esphome-actron-b812@main
+  # Local submodule for development. To revert to the published release:
+  #   - source: github://ddoodm/esphome-actron-b812@main
+  #     components: [actron_b812]
+  - source:
+      type: local
+      path: external/esphome-actron-b812/components
     components: [actron_b812]
 
 esphome:
@@ -349,10 +354,24 @@ climate:
     call_active:
       id: ac_call_active
       name: "Aircon Call Active"
+    fan_speed:
+      id: ac_fan_speed
+      name: "Aircon Fan Speed"
     zone_1:
       name: "Aircon Zone 1"
     zone_2:
       name: "Aircon Zone 2"
+    fan_auto_off:
+      id: ac_fan_auto_off
+      name: "Aircon Fan Auto Off"
+      on_turn_on:
+        then:
+          - lambda: id(g_fan_auto_off) = true;
+          - script.execute: update_fan_buttons
+      on_turn_off:
+        then:
+          - lambda: id(g_fan_auto_off) = false;
+          - script.execute: update_fan_buttons
 
 # ── Backlight ─────────────────────────────────────────────────────────────────
 # GPIO32 is active-low on the 7B, so the LEDC output is inverted.

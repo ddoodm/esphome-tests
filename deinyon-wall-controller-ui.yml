@@ -103,6 +103,11 @@ globals:
     type: int
     initial_value: '0'
 
+  # Fan auto-off toggle. Mirrors ac_fan_auto_off switch state.
+  - id: g_fan_auto_off
+    type: bool
+    initial_value: 'false'
+
   # Current accent hex (matches g_mode); cached so lambdas don't repeat the switch.
   - id: g_accent_hex
     type: uint32_t
@@ -164,7 +169,7 @@ font:
       weight: bold
     id: roboto_status_bold
     size: 16
-    glyphs: "CVPHS"
+    glyphs: "CVPHSMLf-"
 
   # Small MDI icon set for the status bar (weather + WiFi + HA API).
   - file: 'https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf'
@@ -777,6 +782,7 @@ script:
   # Repaints fan speed buttons — selected gets the accent colour, others blend
   # into the pill background. Uses the same g_accent_hex as the mode buttons so
   # the highlight always matches the active mode colour.
+  # The auto-off button is an independent toggle: highlighted when g_fan_auto_off is true.
   - id: update_fan_buttons
     then:
       - lambda: |-
@@ -795,6 +801,10 @@ script:
             lv_obj_set_style_bg_color(it.btn, sel ? accent : inactive, LV_STATE_DEFAULT);
             lv_obj_set_style_text_color(it.lbl, sel ? icon_on : icon_off, LV_STATE_DEFAULT);
           }
+          // Auto-off is an independent toggle — highlighted when enabled.
+          bool ao = id(g_fan_auto_off);
+          lv_obj_set_style_bg_color(id(btn_fan_auto_off), ao ? accent : inactive, LV_STATE_DEFAULT);
+          lv_obj_set_style_text_color(id(lbl_fan_auto_off), ao ? icon_on : icon_off, LV_STATE_DEFAULT);
 
   # ── Sensor source list ────────────────────────────────────────────────────
   # Repaints the four sensor-source rows: highlights the active row and
@@ -890,6 +900,22 @@ script:
             char wbuf[10];
             snprintf(wbuf, sizeof(wbuf), "%.0f\xC2\xB0""C", ot);
             lv_label_set_text(id(status_weather_temp), wbuf);
+          }
+
+          // ── Fan speed indicator ────────────────────────────────────────────────
+          // Reads the ac_fan_speed text sensor (published by actron_b812 every 222ms)
+          // and maps it to a two-character label: fH / fM / fL / f-
+          {
+            const std::string &fs = id(ac_fan_speed).state;
+            const char *fan_txt;
+            uint32_t    fan_col;
+            if (fs == "high")        { fan_txt = "fH"; fan_col = 0xFFFFFF; }
+            else if (fs == "medium") { fan_txt = "fM"; fan_col = 0xAAAAAA; }
+            else if (fs == "low")    { fan_txt = "fL"; fan_col = 0x666666; }
+            else                     { fan_txt = "f-"; fan_col = 0x333333; }
+            lv_label_set_text(id(status_fan_label), fan_txt);
+            lv_obj_set_style_text_color(id(status_fan_label),
+                                        lv_color_hex(fan_col), LV_STATE_DEFAULT);
           }
 
           // ── WiFi signal strength ───────────────────────────────────────────────
@@ -1179,6 +1205,19 @@ lvgl:
                   height: 1
                   bg_opa: transp
                   border_width: 0
+
+              # ── Right: fan speed indicator ────────────────────────────────────
+              # Shows the actual transmitted fan speed: fH / fM / fL / f-
+              # Derived from the ac_fan_speed text sensor (high/medium/low/off).
+              - label:
+                  id: status_fan_label
+                  text: "f-"
+                  text_font: roboto_status_bold
+                  text_color: 0x333333
+                  pad_top: 0
+                  pad_bottom: 0
+                  pad_left: 0
+                  pad_right: 6
 
               # ── Right: AC state icon (active states) ─────────────────────────
               # Snowflake/fire/fan — hidden when idle, off, or any protection state.
@@ -1692,7 +1731,8 @@ lvgl:
                         align: CENTER
 
         # ── Fan speed selector row ─────────────────────────────────────────────
-        # Speed 1 / 2 / 3 / Auto — same pill style as the mode selector above.
+        # Speed 1 / 2 / 3 / Auto / Auto-Off — same pill style as the mode selector above.
+        # Auto-Off is an independent toggle; the other four are mutually exclusive.
         - obj:
             align: TOP_MID
             y: 533
@@ -1715,7 +1755,7 @@ lvgl:
             widgets:
               - button:
                   id: btn_fan_speed_1
-                  width: 120
+                  width: 96
                   height: 64
                   radius: 12
                   bg_color: 0x1C1C1C
@@ -1739,7 +1779,7 @@ lvgl:
 
               - button:
                   id: btn_fan_speed_2
-                  width: 120
+                  width: 96
                   height: 64
                   radius: 12
                   bg_color: 0x1C1C1C
@@ -1763,7 +1803,7 @@ lvgl:
 
               - button:
                   id: btn_fan_speed_3
-                  width: 120
+                  width: 96
                   height: 64
                   radius: 12
                   bg_color: 0x1C1C1C
@@ -1787,7 +1827,7 @@ lvgl:
 
               - button:
                   id: btn_fan_speed_auto
-                  width: 120
+                  width: 96
                   height: 64
                   radius: 12
                   bg_color: 0x1C1C1C
@@ -1805,6 +1845,28 @@ lvgl:
                     - label:
                         id: lbl_fan_speed_auto
                         text: "\U000F171D"
+                        text_font: mdi_mode
+                        text_color: 0x555555
+                        align: CENTER
+
+              - button:
+                  id: btn_fan_auto_off
+                  width: 96
+                  height: 64
+                  radius: 12
+                  bg_color: 0x1C1C1C
+                  bg_opa: cover
+                  border_width: 0
+                  outline_width: 0
+                  shadow_width: 0
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - switch.toggle: ac_fan_auto_off
+                  widgets:
+                    - label:
+                        id: lbl_fan_auto_off
+                        text: "\U000F0210"
                         text_font: mdi_mode
                         text_color: 0x555555
                         align: CENTER

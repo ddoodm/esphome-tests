@@ -1,0 +1,3 @@
+[submodule "external/esphome-actron-b812"]
+	path = external/esphome-actron-b812
+	url = git@github.com:ddoodm/esphome-actron-b812.git
