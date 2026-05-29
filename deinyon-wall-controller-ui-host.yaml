@@ -47,6 +47,13 @@ logger:
   logs:
     lvgl: INFO
 
+# ── Time ──────────────────────────────────────────────────────────────────────
+# Stub for ha_time used by the status bar clock and the API-connectivity check.
+# The host platform's time source reads the system clock directly.
+time:
+  - platform: host
+    id: ha_time
+
 # ── Display ───────────────────────────────────────────────────────────────────
 # Native 1024×600 matches the hardware panel dimensions.
 # LVGL rotation: 270 (set in the UI package) renders portrait content within.
@@ -68,35 +75,9 @@ touchscreen:
     # native coords. Rotate to LVGL portrait when placing widgets.
     on_touch:
       - lambda: |-
-          int lvgl_x = 599 - touch.y;
-          int lvgl_y = touch.x;
-          ESP_LOGI("touch",
-                   "press lvgl=(%d, %d) ts=(%d, %d) id=%d",
-                   lvgl_x, lvgl_y, touch.x, touch.y, touch.id);
-      - lvgl.widget.update:
-          id: touch_dot
-          hidden: false
-          x: !lambda 'return (599 - touch.y) - 15;'
-          y: !lambda 'return touch.x - 15;'
-      - lvgl.label.update:
-          id: coord_label
-          text: !lambda |-
-            char buf[48];
-            snprintf(buf, sizeof(buf), "lvgl=%d,%d ts=%d,%d",
-                     599 - touch.y, touch.x, touch.x, touch.y);
-            return std::string(buf);
-    on_release:
-      - lambda: 'id(tap_counter) += 1;'
-      - lvgl.label.update:
-          id: tap_count_label
-          text: !lambda |-
-            char buf[32];
-            snprintf(buf, sizeof(buf), "Taps: %d", id(tap_counter));
-            return std::string(buf);
-      - delay: 250ms
-      - lvgl.widget.update:
-          id: touch_dot
-          hidden: true
+          ESP_LOGI("touch", "press lvgl=(%d,%d) ts=(%d,%d) id=%d",
+                   599 - touch.y, touch.x, touch.x, touch.y, touch.id);
+      - script.execute: screen_wake
 
 # ── Stub backlight ────────────────────────────────────────────────────────────
 # Mirrors the real LEDC output so screen_wake and future brightness controls compile.
@@ -150,6 +131,15 @@ sensor:
     lambda: return 18.0;
     update_interval: 10s
 
+  # Stub for the status bar WiFi signal icon.
+  # -45 dBm → wifi-strength-4 (green). Adjust to test other strength tiers.
+  - platform: template
+    id: wifi_signal_db
+    name: "WiFi Signal"
+    unit_of_measurement: "dBm"
+    lambda: return -45.0;
+    update_interval: 30s
+
   # Mirrors the logic in deinyon-wall-controller.yaml — updates driven by select.
   - platform: template
     id: active_temp
@@ -176,6 +166,23 @@ text_sensor:
     id: outdoor_condition
     name: "Outdoor Condition"
     lambda: return {"sunny"};
+    update_interval: 30s
+
+  # Stub for the protection timer in the status bar.
+  # Returns an ISO 8601 UTC timestamp 3 minutes ahead of system time so you
+  # can verify the countdown in the host build. Return {""} to test hidden state.
+  - platform: template
+    id: ac_protection_at
+    name: "Aircon Protection Expires At"
+    lambda: |-
+      auto now = id(ha_time).now();
+      if (!now.is_valid()) return {""};
+      time_t exp = now.timestamp + 180;  // 3 minutes from now
+      struct tm t;
+      gmtime_r(&exp, &t);
+      char buf[26];
+      strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S+00:00", &t);
+      return {buf};
     update_interval: 30s
 
   # Mirrors the actron_b812 text sensors the UI will eventually reference.
@@ -249,6 +256,11 @@ binary_sensor:
     id: ac_compressor_running
     name: "Aircon Compressor Running"
     lambda: return false;
+
+  - platform: template
+    id: ac_reversing_valve
+    name: "Aircon Reversing Valve"
+    lambda: return false;   # false = cool direction
 
   - platform: template
     id: ac_call_active

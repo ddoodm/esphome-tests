@@ -148,6 +148,62 @@ font:
       - "\U000F1473"   # mdi:fan-speed-2
       - "\U000F1474"   # mdi:fan-speed-3
       - "\U000F171D"   # mdi:fan-auto
+
+  # ── Status bar fonts ────────────────────────────────────────────────────────
+  # Small Roboto for time and weather temperature text.
+  - file: "gfonts://Roboto"
+    id: roboto_status
+    size: 16
+    glyphs: "0123456789:.-°C "   # C = Celsius; bold indicator letters live in roboto_status_bold
+
+  # Bold Roboto for the V/C connectivity indicators and P/H/S protection-state letters.
+  # C = compressor, V = reversing valve, P = comp_cooldown, H = heat_valve_hold, S = valve_settling.
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: bold
+    id: roboto_status_bold
+    size: 16
+    glyphs: "CVPHS"
+
+  # Small MDI icon set for the status bar (weather + WiFi + HA API).
+  - file: 'https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_status
+    size: 18
+    bpp: 4
+    glyphs:
+      # ── Weather ────────────────────────────────────────────────────────────
+      - "\U000F0599"   # mdi:weather-sunny
+      - "\U000F0595"   # mdi:weather-partly-cloudy
+      - "\U000F0590"   # mdi:weather-cloudy
+      - "\U000F0591"   # mdi:weather-fog
+      - "\U000F0592"   # mdi:weather-hail
+      - "\U000F0593"   # mdi:weather-lightning
+      - "\U000F067E"   # mdi:weather-lightning-rainy
+      - "\U000F0596"   # mdi:weather-pouring
+      - "\U000F0597"   # mdi:weather-rainy
+      - "\U000F0598"   # mdi:weather-snowy
+      - "\U000F067F"   # mdi:weather-snowy-rainy
+      - "\U000F059D"   # mdi:weather-windy
+      - "\U000F059E"   # mdi:weather-windy-variant
+      - "\U000F0594"   # mdi:weather-night
+      # ── WiFi signal ────────────────────────────────────────────────────────
+      - "\U000F05A9"   # mdi:wifi  (used as full-strength fallback)
+      - "\U000F05AA"   # mdi:wifi-off
+      - "\U000F091F"   # mdi:wifi-strength-1
+      - "\U000F0922"   # mdi:wifi-strength-2
+      - "\U000F0925"   # mdi:wifi-strength-3
+      - "\U000F0928"   # mdi:wifi-strength-4
+      # ── HA API connectivity ────────────────────────────────────────────────
+      - "\U000F05E0"   # mdi:check-circle   (connected)
+      - "\U000F0159"   # mdi:close-circle   (disconnected)
+      # ── AC state ───────────────────────────────────────────────────────────
+      - "\U000F0717"   # mdi:snowflake      (cooling)
+      - "\U000F0238"   # mdi:fire           (heating)
+      - "\U000F0210"   # mdi:fan            (fan-only)
+      # (protection substates now use bold letters P/H/S via roboto_status_bold)
+      # (reversing-valve & compressor are now "V"/"C" text in roboto_status)
+
 # ── Boot init ─────────────────────────────────────────────────────────────────
 # Clears the touch flag on arc_current (display-only dot) and applies initial
 # styling so the arc renders with mode colours from the first frame.
@@ -162,6 +218,7 @@ esphome:
       # so a single call here primes everything.
       - script.execute: sync_climate_to_ui
       - script.execute: update_sensor_list
+      - script.execute: update_status_bar
       # Start the inactivity dim countdown from boot.
       - script.execute: screen_idle_timer
 
@@ -779,6 +836,204 @@ script:
           add(id(bedroom_temp).state);
           set_temp(id(lbl_sensor_average_temp), count > 0 ? sum / count : NAN);
 
+  # ── Status bar refresh ────────────────────────────────────────────────────
+  # Updates all status bar labels: clock, weather icon + temp, WiFi strength,
+  # and HA API connectivity. Safe to call at any time; all reads are non-blocking.
+  #
+  # Weather icon UTF-8 strings are the 4-byte MDI Private-Use-Area code points
+  # pre-encoded as \x sequences so the C++ compiler embeds them directly.
+  # WiFi strength thresholds: ≥-50 dBm=4, ≥-65=3, ≥-75=2, else=1, NaN=off.
+  # API connectivity proxy: ha_time.now().is_valid() is true only after the
+  # Home Assistant API has delivered at least one time sync.
+  - id: update_status_bar
+    then:
+      - lambda: |-
+          // ── Clock ─────────────────────────────────────────────────────────────
+          auto now = id(ha_time).now();
+          if (now.is_valid()) {
+            char tbuf[8];
+            snprintf(tbuf, sizeof(tbuf), "%02d:%02d", now.hour, now.minute);
+            lv_label_set_text(id(status_time_label), tbuf);
+          } else {
+            lv_label_set_text(id(status_time_label), "--:--");
+          }
+
+          // ── Weather icon ───────────────────────────────────────────────────────
+          // Each string is the UTF-8 encoding of the matching MDI code point.
+          const std::string &cond = id(outdoor_condition).state;
+          const char *w_icon;
+          uint32_t    w_col;
+          if      (cond == "sunny")           { w_icon = "\xF3\xB0\x96\x99"; w_col = 0xFFB300; }
+          else if (cond == "partlycloudy")    { w_icon = "\xF3\xB0\x96\x95"; w_col = 0xFFA726; }
+          else if (cond == "cloudy")          { w_icon = "\xF3\xB0\x96\x90"; w_col = 0x90A4AE; }
+          else if (cond == "fog")             { w_icon = "\xF3\xB0\x96\x91"; w_col = 0xB0BEC5; }
+          else if (cond == "hail")            { w_icon = "\xF3\xB0\x96\x92"; w_col = 0x42A5F5; }
+          else if (cond == "lightning")       { w_icon = "\xF3\xB0\x96\x93"; w_col = 0xFDD835; }
+          else if (cond == "lightning-rainy") { w_icon = "\xF3\xB0\x99\xBE"; w_col = 0x5C6BC0; }
+          else if (cond == "pouring")         { w_icon = "\xF3\xB0\x96\x96"; w_col = 0x1E88E5; }
+          else if (cond == "rainy")           { w_icon = "\xF3\xB0\x96\x97"; w_col = 0x42A5F5; }
+          else if (cond == "snowy")           { w_icon = "\xF3\xB0\x96\x98"; w_col = 0x80DEEA; }
+          else if (cond == "snowy-rainy")     { w_icon = "\xF3\xB0\x99\xBF"; w_col = 0x80CBC4; }
+          else if (cond == "windy")           { w_icon = "\xF3\xB0\x96\x9D"; w_col = 0x90A4AE; }
+          else if (cond == "windy-variant")   { w_icon = "\xF3\xB0\x96\x9E"; w_col = 0x90A4AE; }
+          else if (cond == "clear-night")     { w_icon = "\xF3\xB0\x96\x94"; w_col = 0x7986CB; }
+          else                               { w_icon = "\xF3\xB0\x96\x99"; w_col = 0x888888; }
+          lv_label_set_text(id(status_weather_icon), w_icon);
+          lv_obj_set_style_text_color(id(status_weather_icon),
+                                      lv_color_hex(w_col), LV_STATE_DEFAULT);
+
+          // ── Weather temperature ────────────────────────────────────────────────
+          float ot = id(outdoor_temp).state;
+          if (std::isnan(ot)) {
+            lv_label_set_text(id(status_weather_temp), "--\xC2\xB0""C");
+          } else {
+            char wbuf[10];
+            snprintf(wbuf, sizeof(wbuf), "%.0f\xC2\xB0""C", ot);
+            lv_label_set_text(id(status_weather_temp), wbuf);
+          }
+
+          // ── WiFi signal strength ───────────────────────────────────────────────
+          float rssi = id(wifi_signal_db).state;
+          const char *wifi_icon;
+          uint32_t    wifi_col;
+          if (std::isnan(rssi) || rssi < -85.0f) {
+            wifi_icon = "\xF3\xB0\x96\xAA"; wifi_col = 0x555555; // mdi:wifi-off
+          } else if (rssi >= -50.0f) {
+            wifi_icon = "\xF3\xB0\xA4\xA8"; wifi_col = 0x4CAF50; // mdi:wifi-strength-4
+          } else if (rssi >= -65.0f) {
+            wifi_icon = "\xF3\xB0\xA4\xA5"; wifi_col = 0x8BC34A; // mdi:wifi-strength-3
+          } else if (rssi >= -75.0f) {
+            wifi_icon = "\xF3\xB0\xA4\xA2"; wifi_col = 0xFFC107; // mdi:wifi-strength-2
+          } else {
+            wifi_icon = "\xF3\xB0\xA4\x9F"; wifi_col = 0xFF5722; // mdi:wifi-strength-1
+          }
+          lv_label_set_text(id(status_wifi_icon), wifi_icon);
+          lv_obj_set_style_text_color(id(status_wifi_icon),
+                                      lv_color_hex(wifi_col), LV_STATE_DEFAULT);
+
+          // ── AC state icon ──────────────────────────────────────────────────────
+          // Exact matches against compute_state_() from actron_b812.cpp.
+          //
+          // Active states  → status_ac_icon  (MDI glyph, mdi_status font)
+          // Protection states → status_prot_icon (bold letter, roboto_status_bold font)
+          // off / unknown  → both hidden
+          //
+          // Only one of the two icon slots is ever visible at a time; the other is
+          // hidden so the flex row treats it as zero-width.
+          {
+            const std::string &ac = id(ac_state).state;
+
+            // Determine which slot to use
+            const char *ac_glyph  = nullptr;  // MDI glyph → status_ac_icon
+            uint32_t    ac_col    = 0x555555;
+            const char *prot_ltr  = nullptr;  // Bold letter → status_prot_icon
+            uint32_t    prot_col  = 0xFFA726;
+
+            if (ac == "cooling") {
+              ac_glyph = "\xF3\xB0\x9C\x97"; ac_col = 0x33AAFF; // mdi:snowflake  blue
+            } else if (ac == "heating") {
+              ac_glyph = "\xF3\xB0\x88\xB8"; ac_col = 0xFF6622; // mdi:fire       orange
+            } else if (ac == "heat_idle") {
+              // Valve energised, compressor off (between heating cycles)
+              ac_glyph = "\xF3\xB0\x88\xB8"; ac_col = 0x7A3010; // mdi:fire       dim orange
+            } else if (ac == "fan_only") {
+              ac_glyph = "\xF3\xB0\x88\x90"; ac_col = 0x00D9A3; // mdi:fan        teal
+            } else if (ac == "comp_cooldown") {
+              // Compressor cooldown — no heat bit held, straight protection wait
+              prot_ltr = "P"; prot_col = 0xFFA726;              // bold P  amber
+            } else if (ac == "heat_valve_hold") {
+              // Compressor off, HEAT bit held while pressure equalises before valve switch
+              prot_ltr = "H"; prot_col = 0xFF8F00;              // bold H  deep amber
+            } else if (ac == "valve_settling") {
+              // Reversing valve switched — settling before compressor can restart
+              prot_ltr = "S"; prot_col = 0xFFA726;              // bold S  amber
+            }
+            // "off" and unrecognised → both hidden
+
+            if (ac_glyph) {
+              lv_label_set_text(id(status_ac_icon), ac_glyph);
+              lv_obj_set_style_text_color(id(status_ac_icon),
+                                          lv_color_hex(ac_col), LV_STATE_DEFAULT);
+              lv_obj_clear_flag(id(status_ac_icon), LV_OBJ_FLAG_HIDDEN);
+              lv_obj_add_flag(id(status_prot_icon), LV_OBJ_FLAG_HIDDEN);
+            } else if (prot_ltr) {
+              lv_label_set_text(id(status_prot_icon), prot_ltr);
+              lv_obj_set_style_text_color(id(status_prot_icon),
+                                          lv_color_hex(prot_col), LV_STATE_DEFAULT);
+              lv_obj_clear_flag(id(status_prot_icon), LV_OBJ_FLAG_HIDDEN);
+              lv_obj_add_flag(id(status_ac_icon), LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_obj_add_flag(id(status_ac_icon),   LV_OBJ_FLAG_HIDDEN);
+              lv_obj_add_flag(id(status_prot_icon), LV_OBJ_FLAG_HIDDEN);
+            }
+          }
+
+          // ── Reversing valve "V" indicator ──────────────────────────────────────
+          // valve energised (BIT_HEAT set) = heating direction → orange
+          // valve de-energised             = cooling direction → blue
+          if (id(ac_reversing_valve).has_state()) {
+            lv_obj_set_style_text_color(id(status_rv_label),
+                                        lv_color_hex(id(ac_reversing_valve).state
+                                                     ? 0xFF6622U : 0x33AAFFU),
+                                        LV_STATE_DEFAULT);
+          } else {
+            lv_obj_set_style_text_color(id(status_rv_label),
+                                        lv_color_hex(0x444444), LV_STATE_DEFAULT);
+          }
+
+          // ── Compressor "C" indicator ───────────────────────────────────────────
+          // Lit with the current mode-accent colour when running, dark grey when idle.
+          {
+            bool comp = id(ac_compressor_running).has_state()
+                        && id(ac_compressor_running).state;
+            lv_obj_set_style_text_color(id(status_comp_label),
+                                        lv_color_hex(comp ? id(g_accent_hex)
+                                                          : 0x333333U),
+                                        LV_STATE_DEFAULT);
+          }
+
+          // ── Protection timer countdown ─────────────────────────────────────────
+          // protection_expires_at is ISO 8601 UTC: "YYYY-MM-DDTHH:MM:SS+00:00".
+          // Compare UTC expiry seconds-of-day against ha_time.now().timestamp % 86400
+          // (also UTC) to avoid timezone offset errors that broke the old approach.
+          {
+            const std::string &ps = id(ac_protection_at).state;
+            bool prot_shown = false;
+            if (!ps.empty() && ps.size() >= 19) {
+              auto pnow = id(ha_time).now();
+              if (pnow.is_valid()) {
+                int exp_h = 0, exp_m = 0, exp_s = 0;
+                // Time part begins at position 11: "YYYY-MM-DDT[HH:MM:SS]+00:00"
+                if (sscanf(ps.c_str() + 11, "%2d:%2d:%2d", &exp_h, &exp_m, &exp_s) == 3) {
+                  int exp_utc_s = exp_h * 3600 + exp_m * 60 + exp_s;
+                  int now_utc_s = (int)(pnow.timestamp % 86400);
+                  int rem       = exp_utc_s - now_utc_s;
+                  if (rem < 0) rem += 86400; // midnight rollover
+                  if (rem > 0 && rem <= 600) { // sanity: B812 cooldown ≤ 4 min
+                    char pbuf[8];
+                    snprintf(pbuf, sizeof(pbuf), "%d:%02d", rem / 60, rem % 60);
+                    lv_label_set_text(id(status_prot_label), pbuf);
+                    prot_shown = true;
+                  }
+                }
+              }
+            }
+            if (prot_shown)
+              lv_obj_clear_flag(id(status_prot_label), LV_OBJ_FLAG_HIDDEN);
+            else
+              lv_obj_add_flag(id(status_prot_label), LV_OBJ_FLAG_HIDDEN);
+          }
+
+          // ── HA API connectivity ────────────────────────────────────────────────
+          // ha_time is only valid once the HA API has synced at least once.
+          bool ha_ok = id(ha_time).now().is_valid();
+          lv_label_set_text(id(status_api_icon),
+                            ha_ok ? "\xF3\xB0\x97\xA0"   // mdi:check-circle
+                                  : "\xF3\xB0\x85\x99"); // mdi:close-circle
+          lv_obj_set_style_text_color(id(status_api_icon),
+                                      lv_color_hex(ha_ok ? 0x4CAF50U : 0x555555U),
+                                      LV_STATE_DEFAULT);
+
 # ── Images ────────────────────────────────────────────────────────────────────
 # 600×400 glow images anchored to the bottom of the screen.
 # No idle image — idle state shows a plain black background.
@@ -804,6 +1059,16 @@ image:
     id: circle_icon_pwr
     type: RGB
     transparency: alpha_channel
+
+# ── Status bar refresh interval ───────────────────────────────────────────────
+# Keeps the clock ticking and connectivity indicators current. The script only
+# reads cached values and calls lv_label_set_text — essentially free. LVGL only
+# redraws a label when its text string actually changes, so the 1 s tick costs
+# nothing on the 59 seconds per minute when the clock hasn't flipped.
+interval:
+  - interval: 1s
+    then:
+      - script.execute: update_status_bar
 
 # ── LVGL ──────────────────────────────────────────────────────────────────────
 # rotation: 270 — portrait orientation (600 wide × 1024 tall).
@@ -848,12 +1113,168 @@ lvgl:
             align: BOTTOM_MID
             opa: TRANSP
 
+        # ── Status bar ─────────────────────────────────────────────────────────
+        # 30 px strip at the very top. Left side: clock + weather icon + outdoor
+        # temperature. Right side: HA API status + WiFi signal strength.
+        # update_status_bar fills all labels; initial placeholder text is replaced
+        # on the first on_boot call before the first frame is rendered.
+        - obj:
+            id: status_bar
+            align: TOP_LEFT
+            x: 0
+            y: 0
+            width: 600
+            height: 30
+            bg_color: 0x0C0C0C
+            bg_opa: cover
+            border_width: 0
+            radius: 0
+            pad_left: 12
+            pad_right: 12
+            pad_top: 6
+            pad_bottom: 0
+            scrollable: false
+            clickable: false
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: START
+              flex_align_cross: START
+            widgets:
+              # ── Left: clock ──────────────────────────────────────────────────
+              - label:
+                  id: status_time_label
+                  text: "--:--"
+                  text_font: roboto_status
+                  text_color: 0xDDDDDD
+                  pad_top: 0
+                  pad_bottom: 0
+
+              # ── Left: weather icon ───────────────────────────────────────────
+              # Coloured by update_status_bar; placeholder is a grey sunny icon.
+              - label:
+                  id: status_weather_icon
+                  text: "\U000F0599"
+                  text_font: mdi_status
+                  text_color: 0x888888
+                  pad_top: 0
+                  pad_bottom: 0
+                  pad_left: 10
+                  pad_right: 0
+
+              # ── Left: outdoor temperature ────────────────────────────────────
+              - label:
+                  id: status_weather_temp
+                  text: "--°C"
+                  text_font: roboto_status
+                  text_color: 0x888888
+                  pad_top: 0
+                  pad_bottom: 0
+                  pad_left: 4
+                  pad_right: 0
+
+              # ── Flex spacer — pushes right-side items to the edge ────────────
+              - obj:
+                  flex_grow: 1
+                  height: 1
+                  bg_opa: transp
+                  border_width: 0
+
+              # ── Right: AC state icon (active states) ─────────────────────────
+              # Snowflake/fire/fan — hidden when idle, off, or any protection state.
+              # When hidden the flex row collapses this slot; status_prot_icon fills it.
+              - label:
+                  id: status_ac_icon
+                  text: "\U000F0210"
+                  text_font: mdi_status
+                  text_color: 0x555555
+                  hidden: true
+                  pad_top: 0
+                  pad_bottom: 0
+                  pad_left: 0
+                  pad_right: 4
+
+              # ── Right: protection substate letter ────────────────────────────
+              # Bold letter P/H/S shown instead of status_ac_icon during protection
+              # substates (comp_cooldown / heat_valve_hold / valve_settling).
+              # Both this and status_ac_icon are never visible simultaneously.
+              - label:
+                  id: status_prot_icon
+                  text: "P"
+                  text_font: roboto_status_bold
+                  text_color: 0xFFA726
+                  hidden: true
+                  pad_top: 0
+                  pad_bottom: 0
+                  pad_left: 0
+                  pad_right: 4
+
+              # ── Right: reversing valve "V" indicator ──────────────────────────
+              # Bold — orange = heat direction, blue = cool, grey = state unknown.
+              - label:
+                  id: status_rv_label
+                  text: "V"
+                  text_font: roboto_status_bold
+                  text_color: 0x444444
+                  pad_top: 0
+                  pad_bottom: 0
+                  pad_left: 0
+                  pad_right: 2
+
+              # ── Right: compressor "C" indicator ──────────────────────────────
+              # Bold — mode-accent colour when running, dark grey when idle.
+              - label:
+                  id: status_comp_label
+                  text: "C"
+                  text_font: roboto_status_bold
+                  text_color: 0x333333
+                  pad_top: 0
+                  pad_bottom: 0
+                  pad_left: 0
+                  pad_right: 8
+
+              # ── Right: protection timer ───────────────────────────────────────
+              # "M:SS" countdown — hidden when no protection period is active.
+              - label:
+                  id: status_prot_label
+                  text: "0:00"
+                  text_font: roboto_status
+                  text_color: 0xFFA726
+                  hidden: true
+                  pad_top: 0
+                  pad_bottom: 0
+                  pad_left: 0
+                  pad_right: 8
+
+              # ── Right: HA API connectivity icon ──────────────────────────────
+              # Green check-circle when ha_time is valid (HA API synced),
+              # grey close-circle otherwise.
+              - label:
+                  id: status_api_icon
+                  text: "\U000F0159"
+                  text_font: mdi_status
+                  text_color: 0x555555
+                  pad_top: 0
+                  pad_bottom: 0
+                  pad_left: 0
+                  pad_right: 6
+
+              # ── Right: WiFi signal strength icon ─────────────────────────────
+              # Coloured green→orange→red→grey by RSSI; grey wifi-off when NaN.
+              - label:
+                  id: status_wifi_icon
+                  text: "\U000F05AA"
+                  text_font: mdi_status
+                  text_color: 0x555555
+                  pad_top: 0
+                  pad_bottom: 0
+
         # ── Label cluster (action / setpoint / current) ───────────────────────
-        # Flex-column at the very top of the screen. SPACE_BETWEEN distributes
-        # equal vertical gaps between all three text elements.
+        # Flex-column below the status bar. SPACE_BETWEEN distributes equal
+        # vertical gaps between all three text elements.
         - obj:
             align: TOP_MID
-            y: 30
+            y: 36
             width: 360
             height: 170
             bg_opa: transp

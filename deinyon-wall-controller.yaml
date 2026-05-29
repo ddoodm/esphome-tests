@@ -322,6 +322,7 @@ climate:
         # crossfade + status label.
         - script.execute: sync_climate_to_ui
         - script.execute: on_hvac_action_changed
+        - script.execute: update_status_bar
     compressor_running:
       id: ac_compressor_running
       name: "Aircon Compressor Running"
@@ -336,12 +337,14 @@ climate:
           # Auto-mode direction (cool/heat/idle) — drives diff-arc orientation
           - script.execute: on_thermostat_direction_changed
     protection_expires_at:
+      id: ac_protection_at
       name: "Aircon Protection Expires At"
     deadband_active:
       name: "Aircon Deadband Active"
     deadband_expires_at:
       name: "Aircon Deadband Expires At"
     reversing_valve:
+      id: ac_reversing_valve
       name: "Aircon Reversing Valve"
     call_active:
       id: ac_call_active
