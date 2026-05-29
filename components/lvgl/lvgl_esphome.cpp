@@ -261,12 +261,18 @@ bool LvPageType::is_showing() const { return this->parent_->get_current_page() =
 bool IRAM_ATTR LvglComponent::ppa_trans_done_cb(ppa_client_handle_t ppa_client,
                                                 ppa_event_data_t *event_data, void *user_data) {
   // PPA fires this from an ISR when a non-blocking SRM transaction finishes.
-  // user_data points at the per-rotation completion semaphore set up in setup().
-  auto sem = static_cast<SemaphoreHandle_t>(user_data);
-  if (sem == nullptr)
+  // user_data points at the owning component (set as srm_config.user_data).
+  auto *comp = static_cast<LvglComponent *>(user_data);
+  if (comp == nullptr)
     return false;
+  // This transaction's slot has already been recycled by IDF (ppa_core.c calls
+  // ppa_recycle_transaction before this callback), so it is now safe to drop our
+  // in-flight count — keeping it conservative w.r.t. the IDF slot queue.
+  if (comp->ppa_inflight_.load(std::memory_order_relaxed) != 0)
+    comp->ppa_inflight_.fetch_sub(1, std::memory_order_relaxed);
   BaseType_t need_yield = pdFALSE;
-  xSemaphoreGiveFromISR(sem, &need_yield);
+  if (comp->ppa_done_sem_ != nullptr)
+    xSemaphoreGiveFromISR(comp->ppa_done_sem_, &need_yield);
   return need_yield == pdTRUE;
 }
 
@@ -286,6 +292,19 @@ bool LvglComponent::ppa_rotate_(const lv_color_data *src, lv_color_data *dst, ui
     return false;
   }
   this->ppa_skip_until_ms_ = 0;
+
+  // In-flight gate: never submit when the IDF transaction-slot queue is full.
+  // If we did, ppa_do_scale_rotate_mirror would log its own ERROR-level
+  // "exceed maximum pending transactions" and return ESP_FAIL. Because IDF
+  // recycles a slot before invoking our completion callback (which decrements
+  // this count), ppa_inflight_ is always >= the number of slots IDF still has
+  // checked out, so this check guarantees a free slot exists. When saturated we
+  // silently fall back to CPU rotation; the count drains as in-flight
+  // transactions complete.
+  if (this->ppa_inflight_.load(std::memory_order_relaxed) >= PPA_MAX_PENDING_TRANS) {
+    return false;
+  }
+
   ppa_srm_rotation_angle_t angle;
   uint16_t out_w, out_h;
 
@@ -344,7 +363,7 @@ bool LvglComponent::ppa_rotate_(const lv_color_data *src, lv_color_data *dst, ui
   // with the call never returning.  Switching to NON_BLOCKING + an explicit
   // bounded wait lets us recover instead of hanging the whole runtime.
   srm_config.mode = PPA_TRANS_MODE_NON_BLOCKING;
-  srm_config.user_data = this->ppa_done_sem_;
+  srm_config.user_data = this;
 
   // Drain any stale signal from the per-rotation semaphore (mirrors the
   // approach in mipi_dsi::draw_pixels_at — see comment there).
@@ -368,6 +387,9 @@ bool LvglComponent::ppa_rotate_(const lv_color_data *src, lv_color_data *dst, ui
     }
     return false;
   }
+  // Submitted successfully: a slot is now checked out in IDF. Count it as
+  // in-flight until our completion ISR decrements it.
+  this->ppa_inflight_.fetch_add(1, std::memory_order_relaxed);
   if (xSemaphoreTake(this->ppa_done_sem_, pdMS_TO_TICKS(50)) != pdTRUE) {
     // PPA didn't complete in budget — most likely DMA2D contention with the
     // DPI panel. Back off to CPU rotation for a cooldown; the in-flight PPA
@@ -832,15 +854,13 @@ void LvglComponent::setup() {
 #ifdef USE_ESP32_VARIANT_ESP32P4
     ppa_client_config_t ppa_config{};
     ppa_config.oper_type = PPA_OPERATION_SRM;
-    // Give the PPA driver some headroom for back-to-back submissions. Even
-    // though our submit→wait→return pattern in ppa_rotate_ guarantees only
-    // one in-flight transaction at a time on the LVGL side, ISR-recycle
-    // timing under burst load can leave the IDF's transaction-slot queue
-    // momentarily empty when we try to submit the next frame's rotation.
-    // The IDF itself recommends raising this when "exceed maximum pending
-    // transactions" warnings appear (which we hit at LV_COLOR_DEPTH=32
-    // with rapid touch invalidations).
-    ppa_config.max_pending_trans_num = 4;
+    // Number of transaction slots IDF preallocates for this client. ppa_rotate_
+    // tracks how many are in flight (ppa_inflight_) and refuses to submit once
+    // this many are outstanding, so IDF never has to log its own ERROR-level
+    // "exceed maximum pending transactions" — we degrade to CPU rotation
+    // instead. A small pool gives back-to-back submissions a little headroom
+    // under burst load (rapid touch invalidations at LV_COLOR_DEPTH=32).
+    ppa_config.max_pending_trans_num = PPA_MAX_PENDING_TRANS;
     if (ppa_register_client(&ppa_config, &this->ppa_client_) != ESP_OK) {
       ESP_LOGW(TAG, "PPA client registration failed, using software rotation");
       this->ppa_client_ = nullptr;

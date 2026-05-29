@@ -21,12 +21,11 @@ substitutions:
   screen_h: "1024"
 
   # ── Inactivity dimming ──────────────────────────────────────────────────────
-  # After screen_dim_delay of no touch the backlight drops to screen_dim_backlight
-  # and the LVGL page opacity is reduced to screen_dim_opa (0–255) to minimise
-  # burn-in on any self-emissive elements. Touch (via screen_wake) restores both.
+  # After screen_dim_delay of no touch the backlight drops to screen_dim_backlight.
+  # IPS LCD panels don't suffer OLED-style burn-in, so backlight dimming alone is
+  # sufficient — no LVGL opacity reduction needed. Touch (via screen_wake) restores.
   screen_dim_delay:      "30s"
   screen_dim_backlight:  "60%"
-  screen_dim_opa:        "76"    # LV_OPA_30 — page rendered at 30 % opacity
 
   # ── LVGL colour depth ──────────────────────────────────────────────────────
   # Hardware build (mipi_dsi) uses the patched components in components/ to
@@ -172,11 +171,9 @@ esphome:
 # animate_setpoint_to_target which does both with smooth animations).
 script:
   # ── Screen wake / dim ─────────────────────────────────────────────────────
-  # screen_wake: restore full backlight + LVGL page opacity, then restart the
-  #   idle timer so the dim countdown begins fresh from this touch.
-  # screen_dim: drop backlight to the dim level and reduce page opacity to
-  #   screen_dim_opa — both transitions are smooth (backlight via LEDC PWM
-  #   ramp, opa set immediately since the backlight fade masks the snap).
+  # screen_wake: restore full backlight, then restart the idle timer so the dim
+  #   countdown begins fresh from this touch.
+  # screen_dim: drop backlight to the dim level (smooth LEDC PWM ramp).
   # screen_idle_timer: mode:restart debounce — fires screen_dim after
   #   screen_dim_delay of silence; restarted by every screen_wake call.
   - id: screen_wake
@@ -185,8 +182,6 @@ script:
           id: backlight
           brightness: 100%
           transition_length: 400ms
-      - lambda: |-
-          lv_obj_set_style_opa(id(main_page)->obj, LV_OPA_COVER, LV_STATE_DEFAULT);
       - script.execute: screen_idle_timer
 
   - id: screen_dim
@@ -195,8 +190,6 @@ script:
           id: backlight
           brightness: ${screen_dim_backlight}
           transition_length: 2000ms
-      - lambda: |-
-          lv_obj_set_style_opa(id(main_page)->obj, ${screen_dim_opa}, LV_STATE_DEFAULT);
 
   - id: screen_idle_timer
     mode: restart

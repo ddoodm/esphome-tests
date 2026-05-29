@@ -88,7 +88,7 @@ When `bitness == COLOR_BITNESS_8888 && color_depth_ == COLOR_BITNESS_888`, walk 
 
 The recurring crash signature was diagnostic gold: WDT fires at exactly 30s, both cores at `esp_cpu_wait_for_intr` (idle), `loopTask did not reset the watchdog`. That's never a busy loop — it's `loopTask` blocked on a primitive with `portMAX_DELAY`.
 
-This took five iterations to nail down.
+This took six iterations to nail down.
 
 ### Iteration 1 — per-row strip blocked the loop task
 
@@ -149,6 +149,38 @@ Final defence: explicit saturation backoff with rate-limited logging. On *any* P
 
 Per-call PPA timeout also tightened from 100ms → 50ms, since a healthy PPA SRM finishes in single-digit ms; anything over 50ms is saturation, not slowness.
 
+### Iteration 6 — in-flight gate eliminates the IDF error at its source
+
+Iterations 4–5 reduced the `exceed maximum pending transactions` noise but never killed it: the saturation backoff only kicks in *after* a failed submit, and that failed submit is exactly what makes IDF log the error. `ppa_do_scale_rotate_mirror` emits its own `ESP_LOG_ERROR` line whenever its slot queue is empty at submit time — we can't suppress it once we've called the function. So under sustained contention the system would still oscillate (retry every 500ms → IDF logs error → `ESP_FAIL` → cooldown), spamming the log on every recovery attempt even though the CPU-rotation fallback kept the UI alive.
+
+The fix is to **never submit when the queue is full**, by tracking outstanding transactions ourselves. The correctness hinges on IDF's ISR ordering in [esp_driver_ppa/src/ppa_core.c](https://github.com/espressif/esp-idf) `ppa_transaction_done_cb`:
+
+```c
+need_yield |= ppa_recycle_transaction(client, trans_elm);  // slot returned to queue FIRST
+...
+need_yield |= done_cb(client, &edata, trans_elm_user_data); // OUR callback fires AFTER
+```
+
+IDF returns the slot to its `trans_elm_ptr_queue` *before* invoking our `on_trans_done` callback. So if we:
+
+- increment `ppa_inflight_` (a `std::atomic<uint8_t>`) right after a successful submit, and
+- decrement it from our completion ISR (`ppa_trans_done_cb`, which now receives the component via `srm_config.user_data` instead of the bare semaphore),
+
+then `ppa_inflight_` is **always ≥ the number of slots IDF still has checked out** (our decrement runs strictly after IDF's recycle). Gating submission on `ppa_inflight_ < PPA_MAX_PENDING_TRANS` therefore guarantees a free slot exists at submit time — `xQueueReceive` inside `ppa_do_scale_rotate_mirror` can't fail, so the error log can't fire. When the gate trips we silently fall back to CPU rotation; no failed submit, no spam.
+
+```cpp
+// ppa_rotate_, after the cooldown check:
+if (this->ppa_inflight_.load(std::memory_order_relaxed) >= PPA_MAX_PENDING_TRANS)
+  return false;                                  // queue full → CPU fallback, no IDF call
+...
+ppa_do_scale_rotate_mirror(...);                 // guaranteed a slot
+this->ppa_inflight_.fetch_add(1, ...);           // count it until the ISR decrements
+```
+
+This also makes **recovery cleaner and automatic**. Previously the system re-attempted PPA on a fixed 500ms timer and hoped a slot was free (often it wasn't → more spam). Now re-acceleration is gated on real slot availability: as stalled transactions complete, their ISR decrements `ppa_inflight_`, and the moment it drops below the limit the next flush re-engages PPA. Full hardware rotation resumes as soon as the count reaches 0. There's no permanent-leak risk — every `ESP_OK` submit is a queued transaction that *will* complete and fire the ISR decrement, so the counter always drains.
+
+`max_pending_trans_num` (and the gate threshold) live in one shared `PPA_MAX_PENDING_TRANS = 4` constant. The cooldown/timeout defences from iteration 5 are retained as a second layer for the genuine-stall case.
+
 ---
 
 ## Final pipeline characteristics
@@ -161,6 +193,6 @@ Per-call PPA timeout also tightened from 100ms → 50ms, since a healthy PPA SRM
 | Conversion to DPI | none — direct blit | per-frame alpha-strip in `mipi_dsi::draw_pixels_at` |
 | Effective colour depth | 5-6-5 (banding visible on gradients) | 8-8-8 |
 | Worst-case loop-task block | unbounded (`portMAX_DELAY`) | 50ms (PPA wait) + 100ms (strip wait) per flush, never both unbounded |
-| Behaviour under DMA2D contention | n/a — light enough that contention didn't matter | graceful degradation to CPU rotation for 500ms, then retry |
+| Behaviour under DMA2D contention | n/a — light enough that contention didn't matter | in-flight gate skips PPA while its slots are busy (no IDF error), graceful CPU-rotation fallback, auto re-acceleration as slots drain |
 
 The whole thing is structured so that each `components/<name>/` directory is a drop-in copy of upstream `esphome/components/<name>/` with a tightly-scoped diff — a single squash-rebase moves all of this into an esphome fork ready for PR.

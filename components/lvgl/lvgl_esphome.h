@@ -20,6 +20,7 @@
 #include "esphome/components/display/display_color_utils.h"
 #include "esphome/core/component.h"
 
+#include <atomic>
 #include <list>
 #include <lvgl.h>
 #include <map>
@@ -340,11 +341,22 @@ class LvglComponent : public PollingComponent {
   display::DisplayRotation rotation_{display::DISPLAY_ROTATION_0_DEGREES};
   RotationType rotation_type_;
 #ifdef USE_ESP32_VARIANT_ESP32P4
+  // Number of transaction slots the IDF PPA client preallocates. Shared by the
+  // client registration (setup) and the in-flight gate (ppa_rotate_).
+  static constexpr uint8_t PPA_MAX_PENDING_TRANS = 4;
   ppa_client_handle_t ppa_client_{};
   // Completion semaphore for non-blocking PPA SRM operations; given by
   // ppa_trans_done_cb from ISR context. Bounded-timeout wait in ppa_rotate_
   // keeps the loop task alive even if a completion ever gets dropped.
   SemaphoreHandle_t ppa_done_sem_{nullptr};
+  // Number of PPA SRM transactions we have submitted but not yet seen complete.
+  // Incremented (loop task) right after a successful submit, decremented from
+  // the completion ISR. IDF returns each slot to its queue *before* invoking our
+  // done callback, so this count is always >= the number of slots IDF still has
+  // checked out. Gating submission on (count < PPA_MAX_PENDING_TRANS) therefore
+  // guarantees a free slot exists at submit time, so IDF never logs its
+  // "exceed maximum pending transactions" error.
+  std::atomic<uint8_t> ppa_inflight_{0};
   // Saturation backoff: when PPA times out or its slot queue is exhausted
   // (heavy LVGL load + DMA2D contention with the DPI panel), skip PPA and
   // use the CPU rotation path until this millis() deadline passes. This
