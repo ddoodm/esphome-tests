@@ -852,9 +852,8 @@ script:
   #
   # Weather icon UTF-8 strings are the 4-byte MDI Private-Use-Area code points
   # pre-encoded as \x sequences so the C++ compiler embeds them directly.
-  # WiFi strength thresholds: ≥-50 dBm=4, ≥-65=3, ≥-75=2, else=1, NaN=off.
-  # API connectivity proxy: ha_time.now().is_valid() is true only after the
-  # Home Assistant API has delivered at least one time sync.
+  # WiFi strength thresholds: ≥-50 dBm=4, ≥-65=3, ≥-75=2, else=1, not connected=off.
+  # API connectivity: api::global_api_server->is_connected() reflects live state.
   - id: update_status_bar
     then:
       - lambda: |-
@@ -922,7 +921,7 @@ script:
           float rssi = id(wifi_signal_db).state;
           const char *wifi_icon;
           uint32_t    wifi_col;
-          if (std::isnan(rssi) || rssi < -85.0f) {
+          if (!wifi::global_wifi_component->is_connected() || std::isnan(rssi) || rssi < -85.0f) {
             wifi_icon = "\xF3\xB0\x96\xAA"; wifi_col = 0x555555; // mdi:wifi-off
           } else if (rssi >= -50.0f) {
             wifi_icon = "\xF3\xB0\xA4\xA8"; wifi_col = 0x4CAF50; // mdi:wifi-strength-4
@@ -1051,8 +1050,10 @@ script:
           }
 
           // ── HA API connectivity ────────────────────────────────────────────────
-          // ha_time is only valid once the HA API has synced at least once.
-          bool ha_ok = id(ha_time).now().is_valid();
+          // Use the live API connection state rather than ha_time validity; the
+          // time component keeps ticking via millis() after sync so is_valid()
+          // stays true even after the API drops.
+          bool ha_ok = api::global_api_server->is_connected();
           lv_label_set_text(id(status_api_icon),
                             ha_ok ? "\xF3\xB0\x97\xA0"   // mdi:check-circle
                                   : "\xF3\xB0\x85\x99"); // mdi:close-circle
