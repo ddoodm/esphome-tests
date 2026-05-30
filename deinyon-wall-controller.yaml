@@ -29,11 +29,14 @@ substitutions:
   ha_weather:      weather.forecast_home
 
 external_components:
-  # Local overrides that add XRGB8888 / LV_COLOR_DEPTH=32 support to the
-  # display, lvgl, and mipi_dsi components. See components/ directory.
-  - source:
-      type: local
-      path: components
+  # 24-bit colour (LV_COLOR_DEPTH=32) overrides for display/image/lvgl/mipi_dsi.
+  # Published at github.com/ddoodm/esphome-color-depth while being upstreamed.
+  # To develop against the local copy instead:
+  #   - source:
+  #       type: local
+  #       path: components
+  #     components: [display, image, lvgl, mipi_dsi]
+  - source: github://ddoodm/esphome-color-depth@main
     components: [display, image, lvgl, mipi_dsi]
   # Local submodule for development. To revert to the published release:
   #   - source: github://ddoodm/esphome-actron-b812@main
