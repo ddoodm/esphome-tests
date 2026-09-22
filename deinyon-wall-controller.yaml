@@ -314,6 +314,7 @@ climate:
     name: "Aircon"
     transmitter_id: ac_tx
     temperature_sensor_id: active_temp
+    target_temperature_step: 0.5
     hysteresis: 0.2
     auto_deadband: 1.0
     auto_deadband_timeout: 20min
