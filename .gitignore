@@ -6,6 +6,7 @@
 components/actron_b812/__pycache__/
 .clangd
 tests/build/
+/build/
 .DS_Store
 assets/glow-bg.af~lock~
 .*~lock~
